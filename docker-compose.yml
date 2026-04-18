@@ -1,0 +1,60 @@
+version: '3.9'
+
+networks:
+  bde-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  uploads:
+
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bde}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bde_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-bde_intra}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - bde-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bde} -d ${POSTGRES_DB:-bde_intra}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-bde}:${POSTGRES_PASSWORD:-bde_secret}@db:5432/${POSTGRES_DB:-bde_intra}
+    volumes:
+      - uploads:/app/uploads
+    ports:
+      - "${PORT:-4000}:${PORT:-4000}"
+    networks:
+      - bde-network
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:${PORT:-4000}/api/v1
+    ports:
+      - "3000:3000"
+    networks:
+      - bde-network
+    depends_on:
+      - backend
