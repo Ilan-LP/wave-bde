@@ -13,6 +13,7 @@ COPY tsconfig.json ./
 COPY src ./src/
 
 RUN npm run build
+RUN npx tsc --module commonjs --esModuleInterop true --skipLibCheck --outDir dist --target ES2020 --rootDir . prisma/seed.ts
 RUN npx prisma generate
 
 FROM node:20-slim AS runner
@@ -35,4 +36,4 @@ RUN mkdir -p /app/uploads
 
 EXPOSE 4000
 
-CMD ["sh", "-c", "npx prisma db push --accept-data-loss && node dist/index.js"]
+CMD ["sh", "-c", "npx prisma db push --accept-data-loss && node dist/prisma/seed.js && node dist/index.js"]
