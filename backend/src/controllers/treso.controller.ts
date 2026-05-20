@@ -47,9 +47,10 @@ export async function listTransactions(req: Request, res: Response, next: NextFu
 
 export async function createTransaction(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { type, amountCents, category, description, date } = req.body as {
-      type: TresoType; amountCents: number; category?: string; description: string; date: string;
+    const { type, category, description, date } = req.body as {
+      type: TresoType; category?: string; description: string; date: string;
     };
+    const amountCents = parseInt(req.body.amountCents, 10);
 
     if (!type || !amountCents || !description || !date) {
       throw createError('type, amountCents, description et date sont requis', 400, 'VALIDATION_ERROR');
@@ -74,9 +75,10 @@ export async function createTransaction(req: Request, res: Response, next: NextF
 export async function updateTransaction(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const id = Number(req.params.id);
-    const { type, amountCents, category, description, date } = req.body as {
-      type?: TresoType; amountCents?: number; category?: string; description?: string; date?: string;
+    const { type, category, description, date } = req.body as {
+      type?: TresoType; category?: string; description?: string; date?: string;
     };
+    const amountCents = req.body.amountCents !== undefined ? parseInt(req.body.amountCents, 10) : undefined;
 
     const transaction = await prisma.tresoTransaction.update({
       where: { id },

@@ -83,7 +83,7 @@ export default function TresoreriePage() {
   const { data: ventesData, isLoading: ventesLoading } = useQuery({
     queryKey: ['buvette-ventes'],
     queryFn: () => api.get<{ ventes: BuvetteVente[] }>('/buvette/ventes'),
-    enabled: !!user && tab === 'ventes',
+    enabled: !!user,
   });
 
   const createMutation = useMutation({
@@ -215,7 +215,7 @@ export default function TresoreriePage() {
 
         {/* Tab: Vue d'ensemble */}
         {tab === 'overview' && (
-          <div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
               {/* Dernières recettes */}
               <div>
@@ -243,6 +243,52 @@ export default function TresoreriePage() {
                   {transactions.filter(t => t.type === 'DEPENSE').length === 0 && <p style={{ fontSize: '0.85rem', color: '#9ca3af' }}>Aucune dépense enregistrée</p>}
                 </div>
               </div>
+            </div>
+
+            {/* Recettes par jour */}
+            <div>
+              <h3 style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '0.75rem', color: '#1a1a2e' }}>Recettes par jour</h3>
+              {(() => {
+                const dayMap = new Map<string, { buvette: number; treso: number }>();
+                ventes.forEach(v => {
+                  const day = new Date(v.createdAt).toISOString().slice(0, 10);
+                  const cur = dayMap.get(day) ?? { buvette: 0, treso: 0 };
+                  dayMap.set(day, { ...cur, buvette: cur.buvette + v.totalCents });
+                });
+                transactions.filter(t => t.type === 'RECETTE').forEach(t => {
+                  const day = t.date.slice(0, 10);
+                  const cur = dayMap.get(day) ?? { buvette: 0, treso: 0 };
+                  dayMap.set(day, { ...cur, treso: cur.treso + t.amountCents });
+                });
+                const days = Array.from(dayMap.entries()).sort((a, b) => b[0].localeCompare(a[0]));
+                if (days.length === 0) return <p style={{ fontSize: '0.85rem', color: '#9ca3af' }}>Aucune recette enregistrée</p>;
+                return (
+                  <div style={{ background: '#fff', borderRadius: 10, boxShadow: '0 1px 4px rgba(0,0,0,0.08)', overflow: 'hidden' }}>
+                    {days.map(([day, { buvette, treso }], idx) => {
+                      const total = buvette + treso;
+                      const label = new Date(day + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+                      return (
+                        <div key={day} style={{ display: 'flex', alignItems: 'center', padding: '0.75rem 1.25rem', borderTop: idx > 0 ? '1px solid #f3f4f6' : 'none', gap: '0.75rem' }}>
+                          <span style={{ flex: 1, fontWeight: 600, fontSize: '0.88rem', textTransform: 'capitalize', color: '#1a1a2e' }}>{label}</span>
+                          <div style={{ display: 'flex', gap: '0.5rem' }}>
+                            {buvette > 0 && (
+                              <span style={{ fontSize: '0.78rem', padding: '0.15rem 0.6rem', borderRadius: 10, background: '#f3e8ff', color: '#7c3aed', fontWeight: 600 }}>
+                                Buvette {(buvette / 100).toFixed(2)} €
+                              </span>
+                            )}
+                            {treso > 0 && (
+                              <span style={{ fontSize: '0.78rem', padding: '0.15rem 0.6rem', borderRadius: 10, background: '#f0fdf4', color: '#16a34a', fontWeight: 600 }}>
+                                Tréso {(treso / 100).toFixed(2)} €
+                              </span>
+                            )}
+                          </div>
+                          <span style={{ fontWeight: 700, color: '#16a34a', fontSize: '0.95rem', minWidth: 75, textAlign: 'right' }}>+{(total / 100).toFixed(2)} €</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
           </div>
         )}
