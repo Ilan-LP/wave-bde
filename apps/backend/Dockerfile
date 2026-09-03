@@ -23,11 +23,12 @@ RUN pnpm --filter @wave/backend build
 # ---- runtime: minimal image running the compiled backend ----
 FROM base AS runtime
 ENV NODE_ENV=production
-COPY --from=build /repo/apps/backend/package.json ./apps/backend/package.json
-COPY --from=build /repo/apps/backend/dist ./apps/backend/dist
-COPY --from=build /repo/node_modules ./node_modules
-COPY --from=build /repo/apps/backend/node_modules ./apps/backend/node_modules
+COPY --from=build --chown=node:node /repo/apps/backend/package.json ./apps/backend/package.json
+COPY --from=build --chown=node:node /repo/apps/backend/dist ./apps/backend/dist
+COPY --from=build --chown=node:node /repo/node_modules ./node_modules
+COPY --from=build --chown=node:node /repo/apps/backend/node_modules ./apps/backend/node_modules
 WORKDIR /repo/apps/backend
+USER node
 
 EXPOSE 3000
 CMD ["node", "dist/index.js"]
