@@ -23,9 +23,12 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  passwordHash String?
+
   member        Member?
   pointsAccount PointsAccount?
   auditLogs     AuditLog[]      @relation("AuditActor")
+  refreshTokens RefreshToken[]
 }
 
 /// Extends User for people who are actually part of the BDE association.
@@ -131,6 +134,30 @@ enum TodoScope {
   PERSONAL
   POLE
   BUREAU
+}
+
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
+
+/// One row per issued refresh token. Only the SHA-256 hash of the token is
+/// stored; the raw value is returned to the client once, at issuance.
+/// Rotation: refreshing marks the old row `revokedAt` + `replacedByTokenId`
+/// and inserts a new row. Presenting an already-revoked token again is
+/// treated as token theft: all of that user's active tokens are revoked.
+model RefreshToken {
+  id                String        @id @default(cuid())
+  userId            String
+  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash         String        @unique
+  expiresAt         DateTime
+  createdAt         DateTime      @default(now())
+  revokedAt         DateTime?
+  replacedByTokenId String?       @unique
+  replacedByToken   RefreshToken? @relation("RefreshTokenChain", fields: [replacedByTokenId], references: [id])
+  replaces          RefreshToken? @relation("RefreshTokenChain")
+
+  @@index([userId])
 }
 
 // ---------------------------------------------------------------------------
