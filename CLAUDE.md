@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Phase 0 (scaffold) is complete. The monorepo is set up as pnpm workspaces with the backend and all 4 frontends scaffolded under `apps/`, shared packages under `packages/`, local Docker/Postgres infra, a root README, and a CI pipeline (lint + build on push/PR).
 
-The backend currently exposes only a `GET /health` route — no auth, RBAC, audit logging, or Prisma schema yet. That's Build Order step 1, not yet started. Frontends are scaffolded shells (Vite/React/TS/Tailwind) with no real UI or routes yet.
+The backend exposes only a `GET /health` route plus the Prisma schema/migration below — no auth, RBAC middleware, or business logic yet. That's Build Order step 1, still not started beyond the data model. Frontends are scaffolded shells (Vite/React/TS/Tailwind) with no real UI or routes yet.
 
 Two security fixes have been applied since scaffolding: the backend Docker container runs as a non-root user (`USER node`), and CI is scoped to `permissions: contents: read`. Still verify current file/dependency state before assuming anything beyond this.
 
@@ -57,6 +57,29 @@ Pole todos can be assigned cross-pole (any BDE member can help another pole) but
 ## Audit logging
 
 Every mutating action must be logged from day one — transactions, point movements, role changes, deletions, everything. This is a **hard requirement**, not optional. Logs are exported daily via an automated job to Google Drive as a passive backup (no formal restore process required for now).
+
+## Data model (Prisma schema)
+
+Schema lives at `apps/backend/prisma/schema.prisma`, migrated via `prisma migrate dev` (first migration: `20260903205827_init`). All primary keys are `String @id @default(cuid())`, not autoincrement ints — several IDs (User, PointsAccount) end up embedded in QR codes, and sequential ints would make accounts guessable/enumerable.
+
+**Models:**
+- **`User`** — base identity for *anyone* in the system: BDE staff and plain students who just top up points at the buvette. Fields: email (unique), firstName, lastName, isActive, timestamps. Optional 1:1 `Member`, optional 1:1 `PointsAccount`, 1:N `AuditLog` (as actor).
+- **`Member`** — extends `User` (1:1 via `userId`, `onDelete: Cascade`) for people who are actually part of the BDE. This is where RBAC lives: `role` (`MemberRole` enum), optional `poleId`. Also the anchor for Todo assignment/creation, PoleAccessGrant give/receive, and manual Transaction adjustments.
+- **`Pole`** — `COMMUNICATION` / `EVENTS` / `PARTENARIATS` (enum `PoleType`, unique). Has Members, Todos, PoleAccessGrants.
+- **`PoleAccessGrant`** — a `RESPONSABLE_POLE` delegating cross-pole access to a `Member`. Unique on `[memberId, poleId]`; both grantee (`memberId`, cascade) and pole (cascade) delete the grant, but the granting member (`grantedById`) does not (restrict).
+- **`Todo`** — `status` (`TodoStatus`: TODO/IN_PROGRESS/DONE/BLOCKED), `scope` (`TodoScope`: PERSONAL/POLE/BUREAU). `poleId` is nullable at the DB level even though it's conceptually required when `scope = POLE` — **that constraint is enforced in application code, not the DB.** `assigneeId` is `SetNull` on delete (todo survives, becomes unassigned); `creatorId` is required and restricted (can't delete a Member who has created Todos without reassigning first).
+- **`PointsAccount`** — 1:1 with `User` (cascade), `balance` (Int, default 0). 1:N `Transaction`.
+- **`Transaction`** — signed `amount` (Int; positive = credit, negative = debit), `type` (`TransactionType`: TOPUP/PURCHASE/EVENT_REWARD/ADJUSTMENT/REFUND), `metadata` (Json, nullable — SumUp refs, QR scan data, event id, etc.), optional `performedById` (only set for manual staff adjustments). Indexed on `[pointsAccountId, createdAt]` for account history queries.
+- **`AuditLog`** — `actorId` is nullable + `SetNull` on delete **on purpose**: the log must outlive the user it references. Indexed on `[entityType, entityId]` and `[createdAt]`.
+
+**Why `User`/`Member` are split:** every human who touches the system becomes a `User` (a student buying a coffee needs an identity + points account, nothing else). Only actual BDE staff get a `Member` row layered on top, carrying the RBAC role and pole assignment. This keeps the 3-tier RBAC (see below) from leaking onto the thousands of students who are just customers.
+
+**Why `Role` is a Prisma enum, not a table:** the 3-tier RBAC (`BUREAU` / `RESPONSABLE_POLE` / `MEMBRE_POLE`) is fixed and not meant to be DB-editable — no admin UI for creating custom roles is planned. An enum is simpler and gets compile-time exhaustiveness checks; revisit only if the RBAC model itself changes.
+
+**Gotchas:**
+- `isActive` flags on `User`/`Member` are there for planned soft-delete — the app layer should prefer flipping `isActive` over hard-deleting rows. The cascade/`SetNull` rules above are already set up with that in mind (e.g. `AuditLog.actorId` survives user removal); don't add hard-delete flows that fight this.
+- Running Prisma commands locally requires `apps/backend/.env` (gitignored, not committed) with `DATABASE_URL` pointing at the docker-compose Postgres (`postgresql://wave:wave_dev_password@localhost:5432/wave_dev` by default) — copy from `apps/backend/.env.example`.
+- `pnpm-workspace.yaml` has an `allowBuilds` allowlist (pnpm's supply-chain gate for postinstall scripts) — `@prisma/client`, `@prisma/engines`, and `prisma` are set to `true` there so `pnpm install` can fetch Prisma's query engine binaries. Any future package with a build script will need the same treatment or its build gets silently skipped.
 
 ## Build order (hard priority — do not reorder without explicit instruction)
 

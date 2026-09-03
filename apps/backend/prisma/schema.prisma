@@ -1,0 +1,185 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+/// Base identity for anyone in the system: BDE staff and plain students who
+/// top up points at the buvette. RBAC only applies via the optional Member
+/// relation below.
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  firstName String
+  lastName  String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  member        Member?
+  pointsAccount PointsAccount?
+  auditLogs     AuditLog[]      @relation("AuditActor")
+}
+
+/// Extends User for people who are actually part of the BDE association.
+/// RBAC (role + pole) only applies here, not on User.
+model Member {
+  id       String     @id @default(cuid())
+  userId   String     @unique
+  user     User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role     MemberRole
+  poleId   String?
+  pole     Pole?      @relation(fields: [poleId], references: [id])
+  joinedAt DateTime   @default(now())
+  isActive Boolean    @default(true)
+
+  assignedTodos  Todo[]            @relation("TodoAssignee")
+  createdTodos   Todo[]            @relation("TodoCreator")
+  grantsGiven    PoleAccessGrant[] @relation("GrantedBy")
+  grantsReceived PoleAccessGrant[] @relation("GrantedTo")
+  transactions   Transaction[]     @relation("PerformedBy")
+}
+
+enum MemberRole {
+  BUREAU
+  RESPONSABLE_POLE
+  MEMBRE_POLE
+}
+
+// ---------------------------------------------------------------------------
+// Poles
+// ---------------------------------------------------------------------------
+
+model Pole {
+  id          String   @id @default(cuid())
+  name        PoleType @unique
+  displayName String
+  description String?
+
+  members Member[]
+  todos   Todo[]
+  grants  PoleAccessGrant[]
+}
+
+enum PoleType {
+  COMMUNICATION
+  EVENTS
+  PARTENARIATS
+}
+
+/// A RESPONSABLE_POLE delegating cross-pole access to a Member.
+model PoleAccessGrant {
+  id          String    @id @default(cuid())
+  memberId    String
+  member      Member    @relation("GrantedTo", fields: [memberId], references: [id], onDelete: Cascade)
+  poleId      String
+  pole        Pole      @relation(fields: [poleId], references: [id], onDelete: Cascade)
+  grantedById String
+  grantedBy   Member    @relation("GrantedBy", fields: [grantedById], references: [id])
+  createdAt   DateTime  @default(now())
+  expiresAt   DateTime?
+
+  @@unique([memberId, poleId])
+}
+
+// ---------------------------------------------------------------------------
+// Todos
+// ---------------------------------------------------------------------------
+
+model Todo {
+  id          String     @id @default(cuid())
+  title       String
+  description String?
+  status      TodoStatus @default(TODO)
+  scope       TodoScope
+  // Required only when scope = POLE — enforced at application level, not DB level.
+  poleId      String?
+  pole        Pole?      @relation(fields: [poleId], references: [id])
+  assigneeId  String?
+  assignee    Member?    @relation("TodoAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  creatorId   String
+  creator     Member     @relation("TodoCreator", fields: [creatorId], references: [id])
+  dueDate     DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  completedAt DateTime?
+}
+
+enum TodoStatus {
+  TODO
+  IN_PROGRESS
+  DONE
+  BLOCKED
+}
+
+enum TodoScope {
+  PERSONAL
+  POLE
+  BUREAU
+}
+
+// ---------------------------------------------------------------------------
+// Points
+// ---------------------------------------------------------------------------
+
+model PointsAccount {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  balance   Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  transactions Transaction[]
+}
+
+model Transaction {
+  id              String          @id @default(cuid())
+  pointsAccountId String
+  pointsAccount   PointsAccount   @relation(fields: [pointsAccountId], references: [id], onDelete: Cascade)
+  type            TransactionType
+  // Signed: positive = credit, negative = debit.
+  amount          Int
+  description     String?
+  // SumUp payment refs, QR scan data, related event id, etc.
+  metadata        Json?
+  performedById   String?
+  performedBy     Member?         @relation("PerformedBy", fields: [performedById], references: [id])
+  createdAt       DateTime        @default(now())
+
+  @@index([pointsAccountId, createdAt])
+}
+
+enum TransactionType {
+  TOPUP
+  PURCHASE
+  EVENT_REWARD
+  ADJUSTMENT
+  REFUND
+}
+
+// ---------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String
+  entityId   String
+  metadata   Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
