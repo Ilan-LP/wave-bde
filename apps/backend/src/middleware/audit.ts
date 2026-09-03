@@ -12,6 +12,11 @@ const REDACTED_KEYS = new Set([
   "accessToken",
   "refreshToken",
   "tokenHash",
+  "newAccessToken",
+  "newRefreshToken",
+  "secret",
+  "apiKey",
+  "authorization",
 ]);
 
 const REDACTED_PLACEHOLDER = "[REDACTED]";
