@@ -1,0 +1,16 @@
+# Docker build context ignores (root context, used by apps/backend/Dockerfile)
+
+**/node_modules
+**/dist
+**/build
+**/.turbo
+**/.vite
+**/*.tsbuildinfo
+.git
+.gitignore
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store
+README.md

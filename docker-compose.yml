@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: wave-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-wave}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wave_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-wave_dev}
+    ports:
+      # Dev-only default (standard Postgres port). Override POSTGRES_PORT
+      # in .env if 5432 is already taken on your machine.
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wave} -d ${POSTGRES_DB:-wave_dev}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    container_name: wave-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: ${BACKEND_PORT:-3000}
+      # Assembled from the postgres service's own env vars (not read from
+      # DATABASE_URL directly) so it always resolves to the `postgres`
+      # service hostname on the compose network, regardless of what a
+      # host-side DATABASE_URL in .env points to.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-wave}:${POSTGRES_PASSWORD:-wave_dev_password}@postgres:5432/${POSTGRES_DB:-wave_dev}
+      JWT_SECRET: ${JWT_SECRET:-}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-}
+    ports:
+      - "${BACKEND_PORT:-3000}:${BACKEND_PORT:-3000}"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:${BACKEND_PORT:-3000}/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  postgres_data:
