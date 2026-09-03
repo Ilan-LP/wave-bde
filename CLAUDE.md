@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Phase 0 (scaffold) is complete. The monorepo is set up as pnpm workspaces with the backend and all 4 frontends scaffolded under `apps/`, shared packages under `packages/`, local Docker/Postgres infra, a root README, and a CI pipeline (lint + build on push/PR).
+Phase 0 (scaffold) is complete. The monorepo is set up as pnpm workspaces with the backend and all 4 frontends scaffolded under `apps/`, shared packages under `packages/`, local Docker/Postgres infra, a root README, and a CI pipeline (`prisma generate` → lint → build → test on push/PR).
 
 The backend exposes `GET /health` plus `POST /auth/login`, `/auth/refresh`, `/auth/logout` (see **Authentication** below), the Prisma schema/migrations (see **Data model** below), RBAC middleware (`authenticate`, `requireRole`, `requirePoleAccess` — see **RBAC Middleware** below), and a generic audit logging middleware (`auditLog` — see **Audit Logging** below). Business logic beyond auth + RBAC + audit logging is still Build Order step 1, not started. Frontends are scaffolded shells (Vite/React/TS/Tailwind) with no real UI or routes yet.
 
-Two security fixes have been applied since scaffolding: the backend Docker container runs as a non-root user (`USER node`), and CI is scoped to `permissions: contents: read`. Still verify current file/dependency state before assuming anything beyond this.
+Two security fixes have been applied since scaffolding: the backend Docker container runs as a non-root user (`USER node`), and CI is scoped to `permissions: contents: read`. A further hardening pass (2026-09-04, see **Security hardening** below) closed out the findings from `AUDIT-auth-rbac-audit-log.md`. Still verify current file/dependency state before assuming anything beyond this.
 
 ## Project overview
 
@@ -89,15 +89,17 @@ Every FK column is now covered by an index (either a dedicated `@@index` or, whe
 
 Implemented in `apps/backend/src/routes/auth.ts`, `src/lib/jwt.ts`, `src/lib/password.ts`, `src/lib/prisma.ts`, `src/config/env.ts`.
 
-- **Who can log in**: a `User` whose `passwordHash` is set (bcryptjs, 12 salt rounds) **and** who has an active `Member` (role/pole come from `Member`, not `User`). Plain students (no `Member`) can never log in — they only ever get scanned via QR at the buvette. `isActive` is checked on both `User` and `Member`; any failure returns a generic `401 { error: "invalid credentials" }` to avoid leaking which emails exist.
-- **Access token**: JWT, HS256, signed with `JWT_SECRET`, 15 min expiry. Payload: `{ sub: userId, memberId, role, poleId }` — enough for a future RBAC middleware to authorize without a DB hit.
-- **Refresh token**: *also* a JWT, signed with a separate secret (`JWT_REFRESH_SECRET`), 30 day expiry, payload `{ sub: userId, jti }`. The JWT itself is never trusted alone — only its SHA-256 hash, looked up against `RefreshToken.tokenHash`, determines whether it's still valid (unrevoked, unexpired, unrotated). Both tokens are returned in the JSON response body (not cookies — avoids pulling in `cors`/cookie middleware, which is out of scope; storing the refresh token in an httpOnly cookie is a documented future hardening step once the frontends need cross-origin cookie handling).
-- **Rotation**: every `POST /auth/refresh` call issues a brand-new access+refresh pair and revokes the presented refresh token (`revokedAt` + `replacedByTokenId` linking the chain), done inside a Prisma interactive transaction.
-- **Reuse/theft detection**: presenting a refresh token that's already `revokedAt` (i.e. already rotated away, or logged out) revokes **every** active refresh token for that user, not just the one presented — treats reuse as a stolen-token signal.
+- **Who can log in**: a `User` whose `passwordHash` is set (bcryptjs, 12 salt rounds) **and** who has an active `Member` (role/pole come from `Member`, not `User`). Plain students (no `Member`) can never log in — they only ever get scanned via QR at the buvette. `isActive` is checked on both `User` and `Member`; any failure returns a generic `401 { error: "invalid credentials" }` to avoid leaking which emails exist. This is timing-safe too: when the user/member lookup fails before a real password hash exists, `verifyDummyPassword` (`src/lib/password.ts`) still runs one bcrypt comparison against a fixed dummy hash, so a nonexistent/inactive account and a valid-email/wrong-password attempt take the same time — otherwise the early return was a measurable side-channel for enumerating registered emails.
+- **Access token**: JWT, HS256 (algorithm pinned explicitly on both sign and verify — `{ algorithms: ["HS256"] }` — as defense-in-depth, not because anything asymmetric exists in this app today), signed with `JWT_SECRET`, 15 min expiry. Payload: `{ sub: userId, memberId, role, poleId }` — enough for a future RBAC middleware to authorize without a DB hit. **Accepted tradeoff**: because `authenticate`/`requireRole`/`requirePoleAccess`'s BUREAU-bypass and native-pole paths never hit the DB, a role change, pole reassignment, or deactivation doesn't take effect for an already-issued access token until it expires — up to 15 minutes. This is an intentional stateless-JWT tradeoff for this project's size, not an oversight; revisit (e.g. a `tokenVersion` column checked in `authenticate`) only if that window becomes unacceptable.
+- **Refresh token**: *also* a JWT (same HS256 pinning), signed with a separate secret (`JWT_REFRESH_SECRET`), 30 day expiry, payload `{ sub: userId, jti }`. The JWT itself is never trusted alone — only its SHA-256 hash, looked up against `RefreshToken.tokenHash`, determines whether it's still valid (unrevoked, unexpired, unrotated — `/auth/refresh` checks `RefreshToken.expiresAt` explicitly as a DB-side backstop, independent of the JWT's own `exp`). Both tokens are returned in the JSON response body (not cookies — avoids pulling in `cors`/cookie middleware, which is out of scope; storing the refresh token in an httpOnly cookie is a documented future hardening step once the frontends need cross-origin cookie handling).
+- **Rotation**: every `POST /auth/refresh` call issues a brand-new access+refresh pair and revokes the presented refresh token (`revokedAt` + `replacedByTokenId` linking the chain), done inside a Prisma interactive transaction. The revoke is a conditional `updateMany({ where: { id, revokedAt: null } })` checked for `count === 0` *inside* that same transaction (not a separate read-then-write) — this closes a race where two concurrent refreshes of the same token could otherwise both succeed before either observed the other's revoke, silently doubling a session without tripping reuse-detection.
+- **Reuse/theft detection**: presenting a refresh token that's already `revokedAt` (i.e. already rotated away, logged out, or lost the rotation race above) revokes **every** active refresh token for that user, not just the one presented — treats reuse as a stolen-token signal.
 - **Logout** (`POST /auth/logout`): revokes just the presented refresh token. Idempotent — a missing/garbage/already-revoked token still returns `204`.
+- **Rate limiting**: `POST /auth/login` is limited to 10 attempts per 15 minutes per IP (`express-rate-limit`, in-memory store — fine for a single-instance VPS deployment; revisit if the backend is ever horizontally scaled, since the counter wouldn't be shared across instances).
 - **Required env vars** (fail-fast, `src/config/env.ts`, imported first thing in `src/index.ts`): `JWT_SECRET`, `JWT_REFRESH_SECRET`. Missing or empty → the server throws and refuses to start, before any request is served. Generate real values with `openssl rand -hex 32`; never reuse the same value for both.
 - **Known gap**: there is no endpoint or seed script to *create* a `Member`'s initial password — `passwordHash` currently has to be set directly in the DB (e.g. via Prisma Studio or a one-off script) for local testing. An invite/registration/password-reset flow is a separate future task.
 - **Implemented**: RBAC/authorization middleware lives in `src/middleware/` — see **RBAC Middleware** section below.
+- **Tests**: `src/__tests__/routes/auth.test.ts` (Vitest + Supertest, Prisma and `src/lib/password.ts` mocked) covers the timing-normalization call, the DB-side expiry check, the rotation-race rollback, reuse/theft detection, and logout idempotency.
 
 ## RBAC Middleware
 
@@ -146,7 +148,7 @@ Implemented in `apps/backend/src/middleware/audit.ts` (exported as `auditLog` fr
 - `action`: `CREATE` (POST) / `UPDATE` (PUT, PATCH) / `DELETE` (DELETE).
 - `entityType`: inferred from the first path segment (kebab-case → PascalCase, naive trailing-`s` stripped, e.g. `/points-accounts` → `PointsAccount`).
 - `entityId`: `req.params.id` if present, else the response body's `id` field, else the literal string `"unknown"` (with a `console.warn`) — a row is always written, never silently dropped for lack of an id.
-- `metadata`: `{ method, path, role, requestBody, responseBody }` — both bodies redacted (keys `password`, `passwordHash`, `token`, `accessToken`, `refreshToken`, `tokenHash` become `"[REDACTED]"`). There's no dedicated `role` column on `AuditLog`, so role rides in `metadata` instead — a deliberate choice, not a schema gap.
+- `metadata`: `{ method, path, role, requestBody, responseBody }` — both bodies redacted (keys `password`, `passwordHash`, `token`, `accessToken`, `refreshToken`, `tokenHash`, `newAccessToken`, `newRefreshToken`, `secret`, `apiKey`, `authorization` become `"[REDACTED]"`). This is a fixed key-name denylist, not structural — a future route storing a secret under a different field name won't be caught automatically; extend `REDACTED_KEYS` in `audit.ts` when that happens. There's no dedicated `role` column on `AuditLog`, so role rides in `metadata` instead — a deliberate choice, not a schema gap.
 
 **Only successful mutations are logged** (`res.statusCode < 400`) — a rejected request didn't actually change anything, so it isn't recorded as an audit entry.
 
@@ -158,9 +160,21 @@ Implemented in `apps/backend/src/middleware/audit.ts` (exported as `auditLog` fr
 
 **Error handling:** the audit write is fired from inside the `finish` handler, after the response has already been sent, and is never awaited by the request — a DB/logging failure cannot block or fail the business response. On failure it's `console.error`'d (never silently swallowed) so a missed log is visible in server logs even though the client never sees it.
 
-**Known limitation:** there's no generic DB "before" snapshot. `metadata.requestBody` is the client's change payload, not a true prior-row read — building one generically would require mapping each inferred `entityType` back to a Prisma delegate, which is unverified against any real route since none exist yet. If a future route needs a real before/after diff, have that handler set `res.locals.auditBefore` before responding and extend the middleware to include it (not currently implemented).
+**Known limitation:** entity-type/id inference only looks at the first path segment and `req.params.id`, so it silently mislabels nested routes — including CLAUDE.md's own documented RBAC example, `POST /poles/:poleId/todos`, which would get audited as `entityType: "Pole"` instead of `"Todo"`. `audit.test.ts` has a test pinned to this exact scenario (`"KNOWN LIMITATION: mislabels entityType..."`) so the wrong-but-expected behavior is visible and won't silently change — any real route shaped like this **must** set `res.locals.auditEntityType`/`auditEntityId` explicitly (see below). There's also no generic DB "before" snapshot: `metadata.requestBody` is the client's change payload, not a true prior-row read — building one generically would require mapping each inferred `entityType` back to a Prisma delegate, which is unverified against any real route since none exist yet. If a future route needs a real before/after diff, have that handler set `res.locals.auditBefore` before responding and extend the middleware to include it (not currently implemented).
 
 **Coverage right now:** zero live routes actually produce an audit row today — the only mutating routes that exist (`/auth/login`, `/auth/refresh`, `/auth/logout`) are excluded by design above. The middleware applies automatically the moment any future business mutating route is added; no wiring needed per route.
+
+## Security hardening
+
+Cross-cutting, applied globally in `apps/backend/src/index.ts` (not specific to any one route):
+- `helmet()` is applied first, before `express.json()`, for standard security headers (CSP, HSTS, `X-Content-Type-Options`, etc.).
+- A generic error-handling middleware is registered last (after all routers) and always responds `500 { error: "internal server error" }` with no stack trace — Express's own default error handler leaks the stack trace in the response body whenever `NODE_ENV !== "production"`, which would otherwise apply to local dev and CI test runs (the Docker runtime image sets `NODE_ENV=production`, but `pnpm dev` and CI don't).
+- `SIGTERM`/`SIGINT` handlers close the HTTP server and call `prisma.$disconnect()` before exiting, instead of leaving Prisma to be torn down mid-request on container stop.
+- `/auth/login` has rate limiting — see **Authentication** above.
+
+**Not done, and deliberately so:**
+- `app.set("trust proxy", ...)` is **not** configured. There's no reverse proxy in front of the backend yet (plain Docker Compose, no nginx/Caddy). Enabling `trust proxy` without one would let any client spoof its own IP via `X-Forwarded-For`, which the `auditLog` middleware records — that would make audit IPs *less* trustworthy, not more. Set this only when a real reverse proxy is introduced, pointed at that proxy's actual hop count.
+- No outbox/durability mechanism for audit log writes — see **Audit Logging**'s fire-and-forget behavior above. Out of scope without a queue.
 
 ## Build order (hard priority — do not reorder without explicit instruction)
 
@@ -185,6 +199,11 @@ Examples:
 - Never expand scope beyond the requested task.
 - Follow the Conventional Commits rule above on every commit.
 - Summarize exactly what was done at the end of every session — the project owner needs to know precisely what the AI changed (school policy requirement).
+
+## Known issues / follow-ups
+
+- **Fixed (2026-09-04):** CI was failing on every fresh checkout (`prisma generate` never ran in CI, so the backend `build` step failed on `@prisma/client` type resolution; CI also never ran the backend test suite). `ci.yml` now runs `prisma generate` → lint → build → test in that order; verified against a genuine fresh-clone simulation, not just read. See `AUDIT-auth-rbac-audit-log.md` for the original findings from the 2026-09-03 audit of auth/RBAC/audit-logging, and this section plus **Authentication**/**Audit Logging**/**Security hardening** above for what was fixed vs. accepted as a documented tradeoff.
+- **Not fixed, accepted as-is:** `trust proxy` (see **Security hardening**) and the audit log's fire-and-forget durability (see **Audit Logging**) — both would need infrastructure (a reverse proxy, a queue) that doesn't exist yet.
 
 ## Open questions
 
