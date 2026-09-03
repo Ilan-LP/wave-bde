@@ -14,12 +14,14 @@ export interface AccessTokenPayload {
   poleId: string | null;
 }
 
+const JWT_ALGORITHM = "HS256";
+
 export function signAccessToken(payload: AccessTokenPayload): string {
-  return jwt.sign(payload, env.jwtSecret, { expiresIn: ACCESS_TOKEN_TTL });
+  return jwt.sign(payload, env.jwtSecret, { expiresIn: ACCESS_TOKEN_TTL, algorithm: JWT_ALGORITHM });
 }
 
 export function verifyAccessToken(token: string): AccessTokenPayload {
-  return jwt.verify(token, env.jwtSecret) as AccessTokenPayload;
+  return jwt.verify(token, env.jwtSecret, { algorithms: [JWT_ALGORITHM] }) as AccessTokenPayload;
 }
 
 export interface RefreshTokenPayload {
@@ -38,12 +40,13 @@ export function signRefreshToken(userId: string): { token: string; tokenHash: st
   const jti = randomBytes(32).toString("hex");
   const token = jwt.sign({ sub: userId, jti } satisfies RefreshTokenPayload, env.jwtRefreshSecret, {
     expiresIn: REFRESH_TOKEN_TTL,
+    algorithm: JWT_ALGORITHM,
   });
   return { token, tokenHash: hashRefreshToken(token) };
 }
 
 export function verifyRefreshToken(token: string): RefreshTokenPayload {
-  return jwt.verify(token, env.jwtRefreshSecret) as RefreshTokenPayload;
+  return jwt.verify(token, env.jwtRefreshSecret, { algorithms: [JWT_ALGORITHM] }) as RefreshTokenPayload;
 }
 
 export function hashRefreshToken(token: string): string {

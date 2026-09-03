@@ -1,7 +1,7 @@
 import { Router, type Router as ExpressRouter } from "express";
 import type { Member, User } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
-import { verifyPassword } from "../lib/password.js";
+import { verifyPassword, verifyDummyPassword } from "../lib/password.js";
 import {
   signAccessToken,
   signRefreshToken,
@@ -40,6 +40,9 @@ authRouter.post("/login", async (req, res) => {
   const invalidCredentials = () => res.status(401).json({ error: "invalid credentials" });
 
   if (!user || !user.isActive || !user.passwordHash || !user.member || !user.member.isActive) {
+    // Run the same bcrypt cost as a real password check so this path isn't
+    // distinguishable by timing from a valid-email/wrong-password attempt.
+    await verifyDummyPassword(password);
     invalidCredentials();
     return;
   }
@@ -99,13 +102,21 @@ authRouter.post("/refresh", async (req, res) => {
     return;
   }
 
-  if (existing.revokedAt) {
-    // Reuse of an already-rotated/revoked token: treat as theft and kill
-    // every active session for this user.
-    await prisma.refreshToken.updateMany({
+  const revokeAllForUser = () =>
+    prisma.refreshToken.updateMany({
       where: { userId: existing.userId, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+
+  if (existing.revokedAt) {
+    // Reuse of an already-rotated/revoked token: treat as theft and kill
+    // every active session for this user.
+    await revokeAllForUser();
+    res.status(401).json({ error: "invalid refresh token" });
+    return;
+  }
+
+  if (existing.expiresAt <= new Date()) {
     res.status(401).json({ error: "invalid refresh token" });
     return;
   }
@@ -121,6 +132,13 @@ authRouter.post("/refresh", async (req, res) => {
     user.member,
   );
 
+  // The revoke is conditioned on revokedAt still being null and happens in
+  // the same transaction as the create, so two concurrent refreshes of the
+  // same token can't both succeed: whichever commits second sees count 0
+  // (the row was already revoked by the first) and the whole transaction
+  // rolls back, discarding its newly created token instead of leaving an
+  // orphaned extra session.
+  let alreadyRotated = false;
   await prisma.$transaction(async (tx) => {
     const created = await tx.refreshToken.create({
       data: {
@@ -129,11 +147,27 @@ authRouter.post("/refresh", async (req, res) => {
         expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
       },
     });
-    await tx.refreshToken.update({
-      where: { id: existing.id },
+    const revoked = await tx.refreshToken.updateMany({
+      where: { id: existing.id, revokedAt: null },
       data: { revokedAt: new Date(), replacedByTokenId: created.id },
     });
+    if (revoked.count === 0) {
+      alreadyRotated = true;
+      throw new Error("REFRESH_TOKEN_RACE_ROLLBACK");
+    }
+  }).catch((err: unknown) => {
+    if (!alreadyRotated) {
+      throw err;
+    }
   });
+
+  if (alreadyRotated) {
+    // Someone else won the race to rotate this token first — same signal as
+    // presenting an already-revoked token.
+    await revokeAllForUser();
+    res.status(401).json({ error: "invalid refresh token" });
+    return;
+  }
 
   res.json({
     accessToken,
