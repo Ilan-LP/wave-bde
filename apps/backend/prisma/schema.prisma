@@ -40,6 +40,8 @@ model Member {
   joinedAt DateTime   @default(now())
   isActive Boolean    @default(true)
 
+  @@index([poleId])
+
   assignedTodos  Todo[]            @relation("TodoAssignee")
   createdTodos   Todo[]            @relation("TodoCreator")
   grantsGiven    PoleAccessGrant[] @relation("GrantedBy")
@@ -87,6 +89,8 @@ model PoleAccessGrant {
   expiresAt   DateTime?
 
   @@unique([memberId, poleId])
+  @@index([poleId])
+  @@index([grantedById])
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +114,10 @@ model Todo {
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
   completedAt DateTime?
+
+  @@index([poleId])
+  @@index([assigneeId])
+  @@index([creatorId])
 }
 
 enum TodoStatus {
@@ -155,6 +163,7 @@ model Transaction {
   createdAt       DateTime        @default(now())
 
   @@index([pointsAccountId, createdAt])
+  @@index([performedById])
 }
 
 enum TransactionType {
@@ -182,4 +191,5 @@ model AuditLog {
 
   @@index([entityType, entityId])
   @@index([createdAt])
+  @@index([actorId])
 }

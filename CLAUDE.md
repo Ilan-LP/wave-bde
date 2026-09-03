@@ -72,6 +72,8 @@ Schema lives at `apps/backend/prisma/schema.prisma`, migrated via `prisma migrat
 - **`Transaction`** — signed `amount` (Int; positive = credit, negative = debit), `type` (`TransactionType`: TOPUP/PURCHASE/EVENT_REWARD/ADJUSTMENT/REFUND), `metadata` (Json, nullable — SumUp refs, QR scan data, event id, etc.), optional `performedById` (only set for manual staff adjustments). Indexed on `[pointsAccountId, createdAt]` for account history queries.
 - **`AuditLog`** — `actorId` is nullable + `SetNull` on delete **on purpose**: the log must outlive the user it references. Indexed on `[entityType, entityId]` and `[createdAt]`.
 
+Every FK column is now covered by an index (either a dedicated `@@index` or, where it's already the leading column of a `@@unique`/composite index, that): `Member.poleId`, `PoleAccessGrant.poleId`/`grantedById`, `Todo.poleId`/`assigneeId`/`creatorId`, `Transaction.performedById`, `AuditLog.actorId` (migration `20260903211613_add_fk_indexes`).
+
 **Why `User`/`Member` are split:** every human who touches the system becomes a `User` (a student buying a coffee needs an identity + points account, nothing else). Only actual BDE staff get a `Member` row layered on top, carrying the RBAC role and pole assignment. This keeps the 3-tier RBAC (see below) from leaking onto the thousands of students who are just customers.
 
 **Why `Role` is a Prisma enum, not a table:** the 3-tier RBAC (`BUREAU` / `RESPONSABLE_POLE` / `MEMBRE_POLE`) is fixed and not meant to be DB-editable — no admin UI for creating custom roles is planned. An enum is simpler and gets compile-time exhaustiveness checks; revisit only if the RBAC model itself changes.
