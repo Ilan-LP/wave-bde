@@ -26,8 +26,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Generate Prisma Client
+        run: pnpm --filter @wave/backend run prisma:generate
+
       - name: Lint
         run: pnpm run lint
 
       - name: Build
         run: pnpm run build
+
+      - name: Test
+        run: pnpm run test
