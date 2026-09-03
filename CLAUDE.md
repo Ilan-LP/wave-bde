@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-The repository is currently **empty** (working tree was wiped clean in the `delete: restart` commit). Nothing has been scaffolded yet — no monorepo structure, no package.json, no backend, no frontends. The first task in this repo will be setting up the initial project structure per the Build Order below. Do not assume any file, directory, or dependency exists until you have verified it.
+Phase 0 (scaffold) is complete. The monorepo is set up as pnpm workspaces with the backend and all 4 frontends scaffolded under `apps/`, shared packages under `packages/`, local Docker/Postgres infra, a root README, and a CI pipeline (lint + build on push/PR).
+
+The backend currently exposes only a `GET /health` route — no auth, RBAC, audit logging, or Prisma schema yet. That's Build Order step 1, not yet started. Frontends are scaffolded shells (Vite/React/TS/Tailwind) with no real UI or routes yet.
+
+Two security fixes have been applied since scaffolding: the backend Docker container runs as a non-root user (`USER node`), and CI is scoped to `permissions: contents: read`. Still verify current file/dependency state before assuming anything beyond this.
 
 ## Project overview
 
@@ -16,7 +20,7 @@ Wave BDE Platform is a solo-built internal platform for **Wave**, the BDE (stude
 ## Architecture
 
 - Single backend, single PostgreSQL database, serving **4 separate frontends**.
-- Monorepo (pnpm workspaces or Turborepo — final choice TBD at scaffold time) with:
+- Monorepo via pnpm workspaces with:
   - `apps/` — one app per frontend, plus the backend
   - `packages/` — shared code: API types, RBAC definitions, shared UI, auth client
 - Deployed on a personal VPS via Docker Compose.
@@ -26,6 +30,7 @@ Wave BDE Platform is a solo-built internal platform for **Wave**, the BDE (stude
 - **Backend**: Express + Prisma + PostgreSQL
 - **Frontends**: React + Vite + TypeScript + Tailwind
 - **Auth**: JWT with refresh tokens, tied to the school email
+- **Runtime**: Node.js >=22.13 (required by the pinned `pnpm@11.18.0` package manager via corepack; enforced in `engines`, CI, and the backend Dockerfile)
 
 ## The 4 frontends
 
@@ -81,7 +86,6 @@ Examples:
 
 These are ambiguous in the current spec and were not guessed silently — resolve with the project owner when relevant:
 
-- **Monorepo tool**: pnpm workspaces vs. Turborepo not yet decided — to be settled when the repo is first scaffolded.
 - **Point-earning methods** beyond event participation: TBD.
 - **Pole-specific custom modules**: not yet defined per pole (Communication, Events, Partenariats) — to be specified before Build Order step 4.
 - **SumUp Cloud API integration details** (auth flow, device pairing, webhook handling): not yet specified.
