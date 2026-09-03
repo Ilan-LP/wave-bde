@@ -56,6 +56,9 @@ function makeApp(...extraMiddleware: Array<(req: Request, res: Response, next: (
     res.locals.skipAudit = true;
     res.status(200).json({ id: "skip-1" });
   });
+  app.post("/poles/:poleId/todos", (_req, res) => {
+    res.status(201).json({ id: "todo-2", title: "nested" });
+  });
 
   return app;
 }
@@ -159,6 +162,23 @@ describe("auditLog", () => {
     const call = auditCreate.mock.calls[0][0];
     const metadata = call.data.metadata as Record<string, unknown>;
     expect((metadata.requestBody as Record<string, unknown>).password).toBe("[REDACTED]");
+  });
+
+  it("KNOWN LIMITATION: mislabels entityType on a nested resource route unless the handler overrides it", async () => {
+    // Path-based inference only looks at the first segment. A route shaped
+    // like CLAUDE.md's own documented RBAC example (`/poles/:poleId/todos`)
+    // creates a Todo but gets audited as entityType "Pole" — the mismatch
+    // this test pins down. Any such route MUST set
+    // res.locals.auditEntityType / auditEntityId explicitly (see CLAUDE.md
+    // "Audit Logging" -> Known limitation) — this test exists so that
+    // forgetting to do so fails loudly instead of silently mislogging.
+    await supertest(makeApp(withAuth("user-1", "BUREAU")))
+      .post("/poles/pole-1/todos")
+      .send({ title: "nested" });
+    await flush();
+
+    const call = auditCreate.mock.calls[0][0];
+    expect(call.data).toMatchObject({ entityType: "Pole", entityId: "todo-2" });
   });
 
   it("does not fail the HTTP response when the audit write itself fails", async () => {
