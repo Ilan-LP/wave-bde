@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Phase 0 (scaffold) is complete. The monorepo is set up as pnpm workspaces with the backend and all 4 frontends scaffolded under `apps/`, shared packages under `packages/`, local Docker/Postgres infra, a root README, and a CI pipeline (lint + build on push/PR).
 
-The backend exposes `GET /health` plus `POST /auth/login`, `/auth/refresh`, `/auth/logout` (see **Authentication** below), the Prisma schema/migrations (see **Data model** below), and RBAC middleware (`authenticate`, `requireRole`, `requirePoleAccess` — see **RBAC Middleware** below). Business logic beyond auth + RBAC is still Build Order step 1, not started. Frontends are scaffolded shells (Vite/React/TS/Tailwind) with no real UI or routes yet.
+The backend exposes `GET /health` plus `POST /auth/login`, `/auth/refresh`, `/auth/logout` (see **Authentication** below), the Prisma schema/migrations (see **Data model** below), RBAC middleware (`authenticate`, `requireRole`, `requirePoleAccess` — see **RBAC Middleware** below), and a generic audit logging middleware (`auditLog` — see **Audit Logging** below). Business logic beyond auth + RBAC + audit logging is still Build Order step 1, not started. Frontends are scaffolded shells (Vite/React/TS/Tailwind) with no real UI or routes yet.
 
 Two security fixes have been applied since scaffolding: the backend Docker container runs as a non-root user (`USER node`), and CI is scoped to `permissions: contents: read`. Still verify current file/dependency state before assuming anything beyond this.
 
@@ -136,6 +136,31 @@ router.post("/poles/:poleId/todos", authenticate, requireRole("RESPONSABLE_POLE"
 - Always chain `authenticate` before any RBAC middleware — both factories return 401 defensively if `req.auth` is missing, but `authenticate` must always run first in production.
 - `requirePoleAccess()` reads `req.params.poleId` — routes using it must include `:poleId` in the path, otherwise it returns 400.
 - BUREAU bypass is hardcoded in both factories. Do not try to restrict BUREAU via these middlewares — the spec defines BUREAU as full-access.
+
+## Audit Logging
+
+Implemented in `apps/backend/src/middleware/audit.ts` (exported as `auditLog` from `src/middleware/index.ts`), wired globally in `src/index.ts` via `app.use(auditLog)` right after `app.use(express.json())`, before any router. Tests in `src/__tests__/middleware/audit.test.ts` (Vitest + Supertest, `prisma.auditLog.create` mocked — no running database required).
+
+**How it works:** every `POST`/`PUT`/`PATCH`/`DELETE` request is logged automatically, with no per-route call needed — the middleware hooks `res.on("finish")` early in the chain, then reads `req.auth` (set later by that route's `authenticate`, if any) once the response has actually finished. It writes one `AuditLog` row via:
+- `actorId`: `req.auth?.sub ?? null` (matches `User.id`).
+- `action`: `CREATE` (POST) / `UPDATE` (PUT, PATCH) / `DELETE` (DELETE).
+- `entityType`: inferred from the first path segment (kebab-case → PascalCase, naive trailing-`s` stripped, e.g. `/points-accounts` → `PointsAccount`).
+- `entityId`: `req.params.id` if present, else the response body's `id` field, else the literal string `"unknown"` (with a `console.warn`) — a row is always written, never silently dropped for lack of an id.
+- `metadata`: `{ method, path, role, requestBody, responseBody }` — both bodies redacted (keys `password`, `passwordHash`, `token`, `accessToken`, `refreshToken`, `tokenHash` become `"[REDACTED]"`). There's no dedicated `role` column on `AuditLog`, so role rides in `metadata` instead — a deliberate choice, not a schema gap.
+
+**Only successful mutations are logged** (`res.statusCode < 400`) — a rejected request didn't actually change anything, so it isn't recorded as an audit entry.
+
+**Excluded automatically:** `/auth/*` and `/health`. Auth routes mutate `RefreshToken` rows but that's already self-documented there (`revokedAt`/`replacedByTokenId`); the audit log stays scoped to business-entity mutations.
+
+**To exclude or override a route without touching the middleware:**
+- `res.locals.skipAudit = true` — skips audit logging entirely for that route.
+- `res.locals.auditEntityType` / `res.locals.auditEntityId` — override automatic inference (needed for non-flat routes, e.g. a future nested resource like `POST /points-accounts/:id/transactions`, where the mutated entity isn't the first path segment).
+
+**Error handling:** the audit write is fired from inside the `finish` handler, after the response has already been sent, and is never awaited by the request — a DB/logging failure cannot block or fail the business response. On failure it's `console.error`'d (never silently swallowed) so a missed log is visible in server logs even though the client never sees it.
+
+**Known limitation:** there's no generic DB "before" snapshot. `metadata.requestBody` is the client's change payload, not a true prior-row read — building one generically would require mapping each inferred `entityType` back to a Prisma delegate, which is unverified against any real route since none exist yet. If a future route needs a real before/after diff, have that handler set `res.locals.auditBefore` before responding and extend the middleware to include it (not currently implemented).
+
+**Coverage right now:** zero live routes actually produce an audit row today — the only mutating routes that exist (`/auth/login`, `/auth/refresh`, `/auth/logout`) are excluded by design above. The middleware applies automatically the moment any future business mutating route is added; no wiring needed per route.
 
 ## Build order (hard priority — do not reorder without explicit instruction)
 

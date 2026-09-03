@@ -1,2 +1,3 @@
 export { authenticate } from "./authenticate.js";
 export { requireRole, requirePoleAccess } from "./rbac.js";
+export { auditLog } from "./audit.js";
