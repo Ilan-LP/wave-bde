@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Phase 0 (scaffold) is complete. The monorepo is set up as pnpm workspaces with the backend and all 4 frontends scaffolded under `apps/`, shared packages under `packages/`, local Docker/Postgres infra, a root README, and a CI pipeline (lint + build on push/PR).
 
-The backend exposes `GET /health` plus `POST /auth/login`, `/auth/refresh`, `/auth/logout` (see **Authentication** below) and the Prisma schema/migrations below — no RBAC middleware or business logic yet. RBAC enforcement and everything past login is still Build Order step 1, not started. Frontends are scaffolded shells (Vite/React/TS/Tailwind) with no real UI or routes yet.
+The backend exposes `GET /health` plus `POST /auth/login`, `/auth/refresh`, `/auth/logout` (see **Authentication** below), the Prisma schema/migrations (see **Data model** below), and RBAC middleware (`authenticate`, `requireRole`, `requirePoleAccess` — see **RBAC Middleware** below). Business logic beyond auth + RBAC is still Build Order step 1, not started. Frontends are scaffolded shells (Vite/React/TS/Tailwind) with no real UI or routes yet.
 
 Two security fixes have been applied since scaffolding: the backend Docker container runs as a non-root user (`USER node`), and CI is scoped to `permissions: contents: read`. Still verify current file/dependency state before assuming anything beyond this.
 
@@ -97,7 +97,45 @@ Implemented in `apps/backend/src/routes/auth.ts`, `src/lib/jwt.ts`, `src/lib/pas
 - **Logout** (`POST /auth/logout`): revokes just the presented refresh token. Idempotent — a missing/garbage/already-revoked token still returns `204`.
 - **Required env vars** (fail-fast, `src/config/env.ts`, imported first thing in `src/index.ts`): `JWT_SECRET`, `JWT_REFRESH_SECRET`. Missing or empty → the server throws and refuses to start, before any request is served. Generate real values with `openssl rand -hex 32`; never reuse the same value for both.
 - **Known gap**: there is no endpoint or seed script to *create* a `Member`'s initial password — `passwordHash` currently has to be set directly in the DB (e.g. via Prisma Studio or a one-off script) for local testing. An invite/registration/password-reset flow is a separate future task.
-- **Not built here (separate task)**: RBAC/authorization middleware that actually reads the access token's `role`/`poleId` to gate routes. The access token payload is shaped for it, but nothing currently verifies it on any route.
+- **Implemented**: RBAC/authorization middleware lives in `src/middleware/` — see **RBAC Middleware** section below.
+
+## RBAC Middleware
+
+Implemented in `apps/backend/src/middleware/authenticate.ts`, `src/middleware/rbac.ts`, `src/middleware/index.ts`. Types in `src/types/express.d.ts`. Tests in `src/__tests__/middleware/rbac.test.ts` (Vitest + Supertest — no running database required; Prisma is mocked).
+
+**Two-layer design:**
+
+1. `authenticate` — verifies the Bearer token and attaches `req.auth: AccessTokenPayload`. Always required first on any protected route. Stateless, no DB hit.
+2. Composable factory middlewares, applied per route after `authenticate`:
+   - `requireRole(...roles: MemberRole[])` — passes if the caller's role is in the list. **BUREAU always bypasses this check** (hardcoded). Returns 403 otherwise.
+   - `requirePoleAccess()` — passes if the caller has access to the pole in `req.params.poleId`. Check order: BUREAU bypass (no DB) → native `poleId` match (no DB) → `PoleAccessGrant` DB lookup. Returns 403 if none match.
+
+**How to protect a route:**
+
+```ts
+import { authenticate, requireRole, requirePoleAccess } from "../middleware/index.js";
+
+// BUREAU-only:
+router.post("/adjustments", authenticate, requireRole("BUREAU"), handler);
+
+// Any logged-in member:
+router.get("/todos", authenticate, requireRole("RESPONSABLE_POLE", "MEMBRE_POLE"), handler);
+
+// Pole-scoped (native membership + delegated grants):
+router.get("/poles/:poleId/todos", authenticate, requirePoleAccess(), handler);
+
+// Stack both (role check first, then pole access):
+router.post("/poles/:poleId/todos", authenticate, requireRole("RESPONSABLE_POLE", "MEMBRE_POLE"), requirePoleAccess(), handler);
+```
+
+**Cross-pole delegation:** `requirePoleAccess()` does a single `prisma.poleAccessGrant.findUnique({ where: { memberId_poleId: { memberId, poleId } } })`. The grant can be time-bounded via `expiresAt` — expired grants are rejected silently. The DB hit is skipped for BUREAU and for users on their own pole.
+
+**Running tests:** `pnpm --filter @wave/backend test` or `cd apps/backend && pnpm test`. No database needed.
+
+**Gotchas:**
+- Always chain `authenticate` before any RBAC middleware — both factories return 401 defensively if `req.auth` is missing, but `authenticate` must always run first in production.
+- `requirePoleAccess()` reads `req.params.poleId` — routes using it must include `:poleId` in the path, otherwise it returns 400.
+- BUREAU bypass is hardcoded in both factories. Do not try to restrict BUREAU via these middlewares — the spec defines BUREAU as full-access.
 
 ## Build order (hard priority — do not reorder without explicit instruction)
 
