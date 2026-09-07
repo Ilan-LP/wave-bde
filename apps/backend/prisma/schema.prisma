@@ -220,3 +220,12 @@ model AuditLog {
   @@index([createdAt])
   @@index([actorId])
 }
+
+/// Singleton row (id is always the literal "singleton") tracking how far the
+/// daily Google Drive export (src/jobs/auditLogExport.ts) has gotten.
+/// lastExportedAt is null until the first run ever completes successfully.
+model AuditExportCursor {
+  id             String   @id
+  lastExportedAt DateTime?
+  updatedAt      DateTime @updatedAt
+}

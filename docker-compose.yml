@@ -37,6 +37,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-wave}:${POSTGRES_PASSWORD:-wave_dev_password}@postgres:5432/${POSTGRES_DB:-wave_dev}
       JWT_SECRET: ${JWT_SECRET:-}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-}
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON:-}
+      GOOGLE_DRIVE_FOLDER_ID: ${GOOGLE_DRIVE_FOLDER_ID:-}
     ports:
       - "${BACKEND_PORT:-3000}:${BACKEND_PORT:-3000}"
     healthcheck:

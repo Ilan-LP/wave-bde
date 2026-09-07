@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Phase 0 (scaffold) is complete. The monorepo is set up as pnpm workspaces with the backend and all 4 frontends scaffolded under `apps/`, shared packages under `packages/`, local Docker/Postgres infra, a root README, and a CI pipeline (`prisma generate` → lint → build → test on push/PR).
 
-The backend exposes `GET /health` plus `POST /auth/login`, `/auth/refresh`, `/auth/logout` (see **Authentication** below), the Prisma schema/migrations (see **Data model** below), RBAC middleware (`authenticate`, `requireRole`, `requirePoleAccess` — see **RBAC Middleware** below), and a generic audit logging middleware (`auditLog` — see **Audit Logging** below). Business logic beyond auth + RBAC + audit logging is still Build Order step 1, not started. Frontends are scaffolded shells (Vite/React/TS/Tailwind) with no real UI or routes yet.
+The backend exposes `GET /health` plus `POST /auth/login`, `/auth/refresh`, `/auth/logout` (see **Authentication** below), the Prisma schema/migrations (see **Data model** below), RBAC middleware (`authenticate`, `requireRole`, `requirePoleAccess` — see **RBAC Middleware** below), a generic audit logging middleware (`auditLog` — see **Audit Logging** below), and a daily background job that exports `AuditLog` rows to Google Drive as a passive backup (see **Audit Log Export** below). Business logic beyond auth + RBAC + audit logging is still Build Order step 1, not started. Frontends are scaffolded shells (Vite/React/TS/Tailwind) with no real UI or routes yet.
 
 Two security fixes have been applied since scaffolding: the backend Docker container runs as a non-root user (`USER node`), and CI is scoped to `permissions: contents: read`. A further hardening pass (2026-09-04, see **Security hardening** below) closed out the findings from `AUDIT-auth-rbac-audit-log.md`'s 2026-09-03 revision. A second follow-up pass (2026-09-07) fixed 12 more findings from that same file's 2026-09-07 revision — see **Known issues / follow-ups**. Still verify current file/dependency state before assuming anything beyond this.
 
@@ -71,6 +71,7 @@ Schema lives at `apps/backend/prisma/schema.prisma`, migrated via `prisma migrat
 - **`PointsAccount`** — 1:1 with `User` (cascade), `balance` (Int, default 0). 1:N `Transaction`.
 - **`Transaction`** — signed `amount` (Int; positive = credit, negative = debit), `type` (`TransactionType`: TOPUP/PURCHASE/EVENT_REWARD/ADJUSTMENT/REFUND), `metadata` (Json, nullable — SumUp refs, QR scan data, event id, etc.), optional `performedById` (only set for manual staff adjustments). Indexed on `[pointsAccountId, createdAt]` for account history queries.
 - **`AuditLog`** — `actorId` is nullable + `SetNull` on delete **on purpose**: the log must outlive the user it references. Indexed on `[entityType, entityId]` and `[createdAt]`.
+- **`AuditExportCursor`** — singleton row (`id` fixed to the literal `"singleton"`) tracking how far the daily Google Drive export has gotten; see **Audit Log Export** below.
 - **`RefreshToken`** — one row per issued refresh token; see **Authentication** below.
 
 Every FK column is now covered by an index (either a dedicated `@@index` or, where it's already the leading column of a `@@unique`/composite index, that): `Member.poleId`, `PoleAccessGrant.poleId`/`grantedById`, `Todo.poleId`/`assigneeId`/`creatorId`, `Transaction.performedById`, `AuditLog.actorId` (migration `20260903211613_add_fk_indexes`), and `RefreshToken.userId` (migration `20260903211625_add_password_hash_and_refresh_token`, added alongside the `RefreshToken` table itself).
@@ -165,6 +166,28 @@ Implemented in `apps/backend/src/middleware/audit.ts` (exported as `auditLog` fr
 
 **Coverage right now:** zero live routes actually produce an audit row today — the only mutating routes that exist (`/auth/login`, `/auth/refresh`, `/auth/logout`) are excluded by design above. The middleware applies automatically the moment any future business mutating route is added; no wiring needed per route.
 
+## Audit Log Export
+
+Implemented in `apps/backend/src/jobs/googleDrive.ts` (Drive client + upload), `src/jobs/auditLogExport.ts` (the export itself), and `src/jobs/scheduler.ts` (daily timing). Started once from `src/index.ts` (`scheduleDailyAuditExport()`) — deliberately **not** from `src/app.ts`/`createApp()`, so no background timer is ever spun up by `createApp()`-based tests. Tests: `src/__tests__/jobs/{googleDrive,auditLogExport,scheduler}.test.ts` (Vitest, Prisma and the `googleapis` Drive client fully mocked — no real network/DB/Google credentials needed to run the suite).
+
+**Scope:** this is a passive backup, not a restore system — there is no import/restore tooling, and none is planned. Out of scope: a UI/dashboard for export history, and a retention/cleanup policy for old export files in Drive (nothing ever deletes them).
+
+**Schedule:** a hand-rolled recursive-`setTimeout` scheduler (no cron library — a single fixed daily slot didn't justify a new dependency), firing at **03:00 UTC** every day. Recursive `setTimeout` rather than `setInterval` so a slow or failed run can't overlap with the next one; the reschedule happens in a `finally`, so one bad night doesn't stop future runs.
+
+**Format:** one JSON file per run — a JSON array of the raw `AuditLog` rows (Prisma `Date` fields serialize to ISO strings via `JSON.stringify`), uploaded to a single configured Drive folder. Filename: `audit-log-export_from-<ISO>_to-<ISO>.json` (colons/dots replaced with `-` for filename safety) — human-readable, but not parsed back to derive state (see cursor below).
+
+**Incremental, cursor tracked in Postgres:** `AuditExportCursor` is a singleton row (`id` fixed to `"singleton"`, `lastExportedAt DateTime?`). Each run reads the cursor, queries `AuditLog` rows with `createdAt` in `(lastExportedAt, runStartedAt]`, and **only advances the cursor to `runStartedAt` after a successful upload** — so a failed run is retried (with overlap) on the next scheduled run instead of silently losing rows. `lastExportedAt = null` (no cursor row yet) exports the entire table (first-run bootstrap). Zero new rows since the cursor → the run logs and skips the upload without writing an empty file or advancing the cursor.
+
+**Credentials — two env vars, validated eagerly at process startup, same fail-fast pattern as `JWT_SECRET`/`JWT_REFRESH_SECRET` (`src/config/env.ts`):**
+- `GOOGLE_SERVICE_ACCOUNT_JSON` — the full contents of a Google Cloud service-account key file (Drive API enabled, `drive.file` scope), minified to one line. `env.ts` validates it's present *and* parses as JSON (`requireJsonEnv`); `jobs/googleDrive.ts` separately validates the parsed object actually has `client_email`/`private_key` string fields before constructing the `google.auth.JWT` client, since JSON-parseable isn't the same as shaped-correctly.
+- `GOOGLE_DRIVE_FOLDER_ID` — the target Drive folder's ID. The folder must be shared with the service account's `client_email`, since service accounts have no meaningful personal Drive storage quota of their own.
+
+**These two vars are required for the whole backend to boot** — identical treatment to the JWT secrets, not scoped to only when the export job runs: a misconfigured deploy never serves a single request. Consequence: `pnpm dev`, CI, and the test suite all require these vars set (even to dummy values) — `src/__tests__/setup.ts` seeds fixed dummy values for tests, and both `.env.example` files document real ones as required for local dev/prod.
+
+**Google Drive API access:** the `googleapis` package (added as a new dependency), authenticated via `google.auth.JWT` built directly from the parsed service-account credentials (no separate `google-auth-library` dependency needed — it's bundled/re-exported by `googleapis`), scoped to `https://www.googleapis.com/auth/drive.file`.
+
+**Failure handling:** `runAuditLogExport()` throws on any failure (missing/invalid credentials, a DB error, a Drive API error) — it does not swallow anything itself. `scheduler.ts`'s `runAndReschedule()` is the single place that catches, `console.error`'s (never silent), and reschedules regardless of outcome. A failed night is visible in server logs and simply retried ~24h later; it never crashes or restarts the backend process.
+
 ## Security hardening
 
 App assembly lives in `apps/backend/src/app.ts` (`createApp()`, exported for testing — see `src/__tests__/app.test.ts`), imported by `src/index.ts`, which only calls `.listen()` and owns process-level shutdown. `src/app.ts` imports `./config/env.js` as its own first line (not just relying on `index.ts`'s), so the fail-fast secret check can't accidentally run after some other import that itself needs a DB connection.
@@ -210,6 +233,7 @@ Examples:
 - **Fixed (2026-09-04):** CI was failing on every fresh checkout (`prisma generate` never ran in CI, so the backend `build` step failed on `@prisma/client` type resolution; CI also never ran the backend test suite). `ci.yml` now runs `prisma generate` → lint → build → test in that order; verified against a genuine fresh-clone simulation, not just read. See `AUDIT-auth-rbac-audit-log.md` for the original findings from the 2026-09-03 audit of auth/RBAC/audit-logging, and this section plus **Authentication**/**Audit Logging**/**Security hardening** above for what was fixed vs. accepted as a documented tradeoff.
 - **Not fixed, accepted as-is:** `trust proxy` (see **Security hardening**) and the audit log's fire-and-forget durability (see **Audit Logging**) — both would need infrastructure (a reverse proxy, a queue) that doesn't exist yet.
 - **Fixed (2026-09-07):** a follow-up read-only audit of the same auth/RBAC/audit-logging scope re-confirmed CI was green and found no blocking issues, but surfaced 12 should-fix/minor items (the audit log's `redact()` silently turning `Date` values into `{}`; the generic error handler discarding real 4xx status codes; the Dockerfile never running `prisma generate` at all — a latent build failure, not just a hygiene issue; the production image shipping devDependencies and compiled test files; `src/index.ts` having zero test coverage; and several smaller gaps — see **Authentication**/**Audit Logging**/**Security hardening** above for what changed). All 12 were fixed in this pass; see `AUDIT-auth-rbac-audit-log.md` (2026-09-07 revision) for the full per-finding writeup and fix-status annotations. The CI job was also renamed from `lint-and-build` to `build-and-test` to match what it actually runs (no branch protection rule referenced the old name).
+- **Added (2026-09-07):** the daily Audit Log Export to Google Drive (see **Audit Log Export**) — was previously an open question ("Log export mechanics"), now implemented: `googleapis` added as a new dependency, a new `AuditExportCursor` migration (`20260907115217_add_audit_export_cursor`), and `GOOGLE_SERVICE_ACCOUNT_JSON`/`GOOGLE_DRIVE_FOLDER_ID` added to `config/env.ts`'s startup fail-fast. Verified against a real `docker build` + container boot: confirmed the image fails fast without the Google env vars and serves `/health` end-to-end with them set.
 
 ## Open questions
 
@@ -218,5 +242,5 @@ These are ambiguous in the current spec and were not guessed silently — resolv
 - **Point-earning methods** beyond event participation: TBD.
 - **Pole-specific custom modules**: not yet defined per pole (Communication, Events, Partenariats) — to be specified before Build Order step 4.
 - **SumUp Cloud API integration details** (auth flow, device pairing, webhook handling): not yet specified.
-- **Log export mechanics** to Google Drive (format, frequency beyond "daily", auth credentials): not yet specified.
+- **Retention/cleanup of Drive backups**: nothing currently deletes old audit log export files from Drive — see **Audit Log Export**. Out of scope for now; revisit if storage or clutter becomes a problem.
 - **Initial password / Member creation flow**: no endpoint or seed script sets a `Member`'s first password yet — see **Authentication** gotcha above.
