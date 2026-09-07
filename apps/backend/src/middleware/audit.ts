@@ -22,6 +22,9 @@ const REDACTED_KEYS = new Set([
 const REDACTED_PLACEHOLDER = "[REDACTED]";
 
 function redact(value: unknown): Prisma.InputJsonValue | undefined {
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
   if (Array.isArray(value)) {
     return value.map(redact) as Prisma.InputJsonValue;
   }
