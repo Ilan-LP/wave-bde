@@ -17,6 +17,7 @@ const REDACTED_KEYS = new Set([
   "secret",
   "apiKey",
   "authorization",
+  "qrPayload",
 ]);
 
 const REDACTED_PLACEHOLDER = "[REDACTED]";

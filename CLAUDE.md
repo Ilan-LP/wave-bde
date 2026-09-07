@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Phase 0 (scaffold) is complete. The monorepo is set up as pnpm workspaces with the backend and all 4 frontends scaffolded under `apps/`, shared packages under `packages/`, local Docker/Postgres infra, a root README, and a CI pipeline (`prisma generate` → lint → build → test on push/PR).
 
-The backend exposes `GET /health` plus `POST /auth/login`, `/auth/refresh`, `/auth/logout` (see **Authentication** below), `GET /me/qrcode` (see **Per-User QR Code** below), the Prisma schema/migrations (see **Data model** below), RBAC middleware (`authenticate`, `requireRole`, `requirePoleAccess` — see **RBAC Middleware** below), a generic audit logging middleware (`auditLog` — see **Audit Logging** below), and a daily background job that exports `AuditLog` rows to Google Drive as a passive backup (see **Audit Log Export** below). Business logic beyond auth + RBAC + audit logging + QR generation is still Build Order step 1, not started (the buvette scan/deduction endpoint that consumes the QR is not built — that's a separate future task). Frontends are scaffolded shells (Vite/React/TS/Tailwind) with no real UI or routes yet.
+The backend exposes `GET /health` plus `POST /auth/login`, `/auth/refresh`, `/auth/logout` (see **Authentication** below), `GET /me/qrcode` (see **Per-User QR Code** below), `POST /buvette/scan` (see **Buvette Scan + Deduction** below), the Prisma schema/migrations (see **Data model** below), RBAC middleware (`authenticate`, `requireRole`, `requirePoleAccess` — see **RBAC Middleware** below), a generic audit logging middleware (`auditLog` — see **Audit Logging** below), and a daily background job that exports `AuditLog` rows to Google Drive as a passive backup (see **Audit Log Export** below). This is the first slice of Build Order step 2 (points-only; SumUp/card payment and the cashier frontend are still separate future tasks — see **Buvette Scan + Deduction**). Frontends are scaffolded shells (Vite/React/TS/Tailwind) with no real UI or routes yet.
 
 Two security fixes have been applied since scaffolding: the backend Docker container runs as a non-root user (`USER node`), and CI is scoped to `permissions: contents: read`. A further hardening pass (2026-09-04, see **Security hardening** below) closed out the findings from `AUDIT-auth-rbac-audit-log.md`'s 2026-09-03 revision. A second follow-up pass (2026-09-07) fixed 12 more findings from that same file's 2026-09-07 revision — see **Known issues / follow-ups**. Still verify current file/dependency state before assuming anything beyond this.
 
@@ -146,17 +146,59 @@ router.post("/poles/:poleId/todos", authenticate, requireRole("RESPONSABLE_POLE"
 
 Implemented in `apps/backend/src/lib/qrToken.ts` (payload generation) and `apps/backend/src/routes/me.ts` (the endpoint), mounted in `src/app.ts` via `app.use("/me", meRouter)`. Tests in `src/__tests__/routes/me.test.ts` (Vitest + Supertest, Prisma mocked — no running database required).
 
-**Scope:** this covers QR *generation* and *retrieval* only. The buvette scan/deduction endpoint that will actually consume this payload is a separate, not-yet-built future task — nothing here validates or spends points.
+**Scope:** this covers QR *generation* and *retrieval* only. The buvette scan/deduction endpoint that consumes this payload is `POST /buvette/scan` — see **Buvette Scan + Deduction** below.
 
 **What the QR encodes:** an opaque, randomly-generated token (`crypto.randomBytes(32)`, base64url, prefixed `wave:v1:`) — deliberately **not** the raw email and **not** the `User`/`PointsAccount` id. Both of those already appear elsewhere in the API (JWT `sub` claim, `/auth/login`'s response body, audit logs), so encoding either one in the QR would add no real protection: anyone who obtained the id or email through any of those other channels could fabricate a working QR by hand, without ever seeing the person's real badge. The token lives on `PointsAccount.qrToken`, decoupled from any identifier that's exposed anywhere else.
 
-**Rotating, not static:** the token has a 5-minute TTL (`PointsAccount.qrTokenExpiresAt`, `QR_TOKEN_TTL_MS` in `qrToken.ts`). `GET /me/qrcode` returns the current token unchanged (no DB write) if it hasn't expired yet, or generates and persists a fresh one if it's missing or expired. This bounds how long a QR stays usable if someone photographs/screenshots it — the future scan endpoint must reject an expired token even if it otherwise matches. There is no manual regenerate/revoke endpoint (out of scope for this task); the TTL is the only invalidation mechanism today.
+**Rotating, not static:** the token has a 5-minute TTL (`PointsAccount.qrTokenExpiresAt`, `QR_TOKEN_TTL_MS` in `qrToken.ts`). `GET /me/qrcode` returns the current token unchanged (no DB write) if it hasn't expired yet, or generates and persists a fresh one if it's missing or expired. This bounds how long a QR stays usable if someone photographs/screenshots it — `POST /buvette/scan` rejects an expired token even if it otherwise matches. There is no manual regenerate/revoke endpoint (out of scope for this task); the TTL is the only invalidation mechanism today.
 
 **Endpoint:** `GET /me/qrcode`, behind `authenticate` only (no role restriction — any authenticated caller can fetch their own QR, nobody else's). Looks up the `PointsAccount` for `req.auth.sub`; **404** `{ error: "points account not found" }` if the caller has none (there's no PointsAccount-creation flow yet — inventing one was out of scope here). On success: `{ qrPayload: "wave:v1:<token>", expiresAt: "<ISO>" }`. This is the first "self-service" (`/me/...`) route in the codebase — a convention future self-service endpoints can follow.
 
 **Response is a raw payload, not an image:** the endpoint returns the string to encode, not a rendered QR image, so no QR-image-generation dependency was added to the backend. Rendering it as an actual scannable QR code is a frontend concern for whichever future task builds the buvette-facing display — not built here.
 
 **Known gap:** only `Member`s can authenticate today (see **Authentication**), so in practice only BDE staff can currently reach this endpoint. Plain students — the primary buvette customers, who have no `Member`/password and never log in — have no way yet to self-retrieve their own QR code. This isn't fixable within this task: there's no student account-creation flow either (see **Open questions**, "Initial password / Member creation flow" — that gap now extends to plain students needing some way to receive/view their QR at all, not just Members needing a password).
+
+## Buvette Scan + Deduction
+
+Implemented in `apps/backend/src/routes/buvette.ts`, mounted in `src/app.ts` via `app.use("/buvette", buvetteRouter)`. Tests in `src/__tests__/routes/buvette.test.ts` (Vitest + Supertest, Prisma mocked — no running database required).
+
+**Scope:** points-only. This is the first slice of Build Order step 2 — the SumUp/card payment path and the buvette cashier frontend are separate, not-yet-built future tasks, and so is a recharge/top-up endpoint.
+
+**Who is who:** the caller authenticated via the JWT (`authenticate`, `req.auth`) is the **BDE Member operating the till**, not the person paying. The **paying customer** is identified purely by the scanned QR payload in the request body and resolved server-side to a `User`/`PointsAccount` — `req.auth` is never treated as the customer's identity.
+
+**Endpoint:** `POST /buvette/scan`, behind `authenticate` then `requireRole("RESPONSABLE_POLE", "MEMBRE_POLE")` (BUREAU bypasses automatically, per the usual RBAC convention — this is the "any logged-in member" shape, since buvette isn't pole-scoped and every `MemberRole` value passes). Request body: `{ qrPayload: string, productId: string, quantity?: number }` (`quantity` defaults to `1`, must be a positive integer if present). On success: `201 { transactionId, product: { id, name, pricePoints }, quantity, amountDeducted, newBalance, customerUserId }`.
+
+**QR validation:** `prisma.pointsAccount.findUnique({ where: { qrToken: qrPayload } })`, then check `qrTokenExpiresAt` is set and in the future — same token/TTL contract as **Per-User QR Code** above. Not-found and expired collapse into the same generic `401 { error: "invalid or expired qr code" }`, mirroring `/auth/login`'s "invalid credentials" anti-enumeration approach — the response never reveals which reason applied.
+
+**Error responses (all reject with no partial state change):**
+| Case | Status |
+|---|---|
+| malformed body (missing/wrong-typed `qrPayload`/`productId`, or invalid `quantity`) | 400 |
+| QR not found or expired | 401 |
+| product doesn't exist | 404 |
+| product exists but `isActive: false` | 409 |
+| balance too low (including losing a concurrent-scan race) | 402 |
+| replay guard / general throttle tripped | 429 |
+
+**Atomicity ("no partial deduction"):** mirrors `auth.ts`'s refresh-token rotation race-safety pattern exactly (see **Authentication**) — inside `prisma.$transaction`, a conditional `pointsAccount.updateMany({ where: { id, balance: { gte: totalPrice } }, data: { balance: { decrement: totalPrice } } })` is checked for `count === 0` (insufficient balance, or a concurrent scan won the race) and rolled back via a thrown+caught sentinel error before the `Transaction` row is ever created. Either both the balance change and the ledger row land, or neither does.
+
+**Anti-fraud (explicit, basic checks only):**
+1. QR expiry/opacity validation above rejects tampered/guessed/stale tokens.
+2. A replay/duplicate-scan guard: the exact same `qrPayload` string can only be attempted once per 3 seconds (`buvetteQrReplayRateLimit` in `app.ts`, keyed on the request body rather than IP — see below). Catches an accidental double-submit or an attacker replaying a captured QR image seconds later, without blocking legitimate back-to-back different purchases.
+
+Deliberately **not built**: no ML/behavioral fraud scoring, no device fingerprinting, no cross-account velocity checks. Revisit only if the two checks above prove insufficient in practice.
+
+**Rate limiting:** two `express-rate-limit` instances (already a dependency — no new package added), constructed inside `createApp()` and applied via `app.use("/buvette/scan", ...)` before the router mount, same pattern as `loginRateLimit`/`refreshLogoutRateLimit`:
+- `buvetteScanRateLimit` — general throttle, **per-IP** (default keyGenerator), 30 requests/min. Guards against a runaway till client or a compromised operator session.
+- `buvetteQrReplayRateLimit` — the anti-fraud replay guard above, **per scanned-QR-value** (custom `keyGenerator` reading `req.body.qrPayload`), 1 request/3s. Falls back to `ipKeyGenerator(req.ip)` (not raw `req.ip`) when the body is missing/malformed — required by `express-rate-limit` v8, which throws `ERR_ERL_KEY_GEN_IPV6` if a custom `keyGenerator`'s IP fallback isn't wrapped that way.
+
+Both need `req.body` (available since `express.json()` runs globally before them) but not `req.auth`, so they sit at the `app.use(path, ...)` level like the auth limiters, ahead of `authenticate` inside the router — no ordering conflict.
+
+**No schema changes.** `Product` still has no relation to `Transaction` (this was deliberately deferred — see **Data model**). Rather than add a migration, the product id/name/quantity/unit price are recorded in `Transaction.metadata` (the `Json?` field whose doc comment already calls out "QR scan data" as an intended use). The scanned QR isn't stored raw there — only a SHA-256 hash (`qrTokenHash`) — because the token doesn't rotate on use and stays valid for the rest of its 5-minute TTL, so persisting it verbatim would leave a still-usable credential sitting in the ledger; same reasoning as `RefreshToken.tokenHash` (see **Authentication**). Separately, `"qrPayload"` was added to `audit.ts`'s `REDACTED_KEYS` denylist (see **Audit Logging** below) so the raw value the operator's client actually posted doesn't get captured into `AuditLog.metadata.requestBody` (and from there into the Drive export) by the generic audit middleware.
+
+**`Transaction.performedById` is left `null`** for these purchases. CLAUDE.md documents this field as only meaningful for manual staff `ADJUSTMENT`s; a buvette `PURCHASE` isn't that, so setting it would repurpose a field with narrower documented semantics. Which operator ran the till is already captured by the audit log's `actorId` (the operator's `User.id`, from `req.auth.sub`) — no loss of traceability.
+
+**Audit logging:** no ad-hoc logging call — relies entirely on the existing global `auditLog` middleware. Because the route is mounted under `/buvette` (first path segment ≠ the mutated entity), the handler explicitly sets `res.locals.auditEntityType = "Transaction"` and `res.locals.auditEntityId = transaction.id` before responding, per the override mechanism documented in **Audit Logging**'s "Known limitation".
 
 ## Audit Logging
 
@@ -167,7 +209,7 @@ Implemented in `apps/backend/src/middleware/audit.ts` (exported as `auditLog` fr
 - `action`: `CREATE` (POST) / `UPDATE` (PUT, PATCH) / `DELETE` (DELETE).
 - `entityType`: inferred from the first path segment (kebab-case → PascalCase, naive trailing-`s` stripped, e.g. `/points-accounts` → `PointsAccount`).
 - `entityId`: `req.params.id` if present, else the response body's `id` field, else the literal string `"unknown"` (with a `console.warn`) — a row is always written, never silently dropped for lack of an id.
-- `metadata`: `{ method, path, role, requestBody, responseBody }` — both bodies redacted (keys `password`, `passwordHash`, `token`, `accessToken`, `refreshToken`, `tokenHash`, `newAccessToken`, `newRefreshToken`, `secret`, `apiKey`, `authorization` become `"[REDACTED]"`). This is a fixed key-name denylist, not structural — a future route storing a secret under a different field name won't be caught automatically; extend `REDACTED_KEYS` in `audit.ts` when that happens. There's no dedicated `role` column on `AuditLog`, so role rides in `metadata` instead — a deliberate choice, not a schema gap. `redact()` special-cases `Date` values (serializing to ISO strings) before its generic array/object recursion — without that, any `Date` field on a Prisma record echoed back in a response body (nearly every model has `createdAt`/`updatedAt`) would silently collapse to `{}`, since `Object.entries(new Date())` returns no own enumerable properties.
+- `metadata`: `{ method, path, role, requestBody, responseBody }` — both bodies redacted (keys `password`, `passwordHash`, `token`, `accessToken`, `refreshToken`, `tokenHash`, `newAccessToken`, `newRefreshToken`, `secret`, `apiKey`, `authorization`, `qrPayload` become `"[REDACTED]"`; `qrPayload` was added for **Buvette Scan + Deduction** below, the first route to post a live short-TTL credential in its body). This is a fixed key-name denylist, not structural — a future route storing a secret under a different field name won't be caught automatically; extend `REDACTED_KEYS` in `audit.ts` when that happens. There's no dedicated `role` column on `AuditLog`, so role rides in `metadata` instead — a deliberate choice, not a schema gap. `redact()` special-cases `Date` values (serializing to ISO strings) before its generic array/object recursion — without that, any `Date` field on a Prisma record echoed back in a response body (nearly every model has `createdAt`/`updatedAt`) would silently collapse to `{}`, since `Object.entries(new Date())` returns no own enumerable properties.
 
 **Only successful mutations are logged** (`res.statusCode < 400`) — a rejected request didn't actually change anything, so it isn't recorded as an audit entry.
 
@@ -181,7 +223,7 @@ Implemented in `apps/backend/src/middleware/audit.ts` (exported as `auditLog` fr
 
 **Known limitation:** entity-type/id inference only looks at the first path segment and `req.params.id`, so it silently mislabels nested routes — including CLAUDE.md's own documented RBAC example, `POST /poles/:poleId/todos`, which would get audited as `entityType: "Pole"` instead of `"Todo"`. `audit.test.ts` has a test pinned to this exact scenario (`"KNOWN LIMITATION: mislabels entityType..."`) so the wrong-but-expected behavior is visible and won't silently change — any real route shaped like this **must** set `res.locals.auditEntityType`/`auditEntityId` explicitly (see below). There's also no generic DB "before" snapshot: `metadata.requestBody` is the client's change payload, not a true prior-row read — building one generically would require mapping each inferred `entityType` back to a Prisma delegate, which is unverified against any real route since none exist yet. If a future route needs a real before/after diff, have that handler set `res.locals.auditBefore` before responding and extend the middleware to include it (not currently implemented).
 
-**Coverage right now:** zero live routes actually produce an audit row today — the only mutating routes that exist (`/auth/login`, `/auth/refresh`, `/auth/logout`) are excluded by design above. The middleware applies automatically the moment any future business mutating route is added; no wiring needed per route.
+**Coverage right now:** `POST /buvette/scan` (see **Buvette Scan + Deduction** above) is the first live route to actually produce an audit row — every other mutating route (`/auth/login`, `/auth/refresh`, `/auth/logout`) is excluded by design above. The middleware applies automatically the moment any future business mutating route is added; no wiring needed per route beyond the `res.locals.auditEntityType`/`auditEntityId` override for non-flat paths.
 
 ## Audit Log Export
 
@@ -237,8 +279,8 @@ Repo-level prep for deploying to an always-on Debian home machine (not a rented 
 
 ## Build order (hard priority — do not reorder without explicit instruction)
 
-1. Backend operational and secured (auth, RBAC, audit logging, DB schema)
-2. Buvette, functional end to end including SumUp integration — no treasury dashboard needed yet, raw logs are sufficient at this stage
+1. Backend operational and secured (auth, RBAC, audit logging, DB schema) — **done**
+2. Buvette, functional end to end including SumUp integration — no treasury dashboard needed yet, raw logs are sufficient at this stage. **In progress**: points-side scan + deduction (`POST /buvette/scan`, see **Buvette Scan + Deduction**) is done; SumUp/card payment and the cashier frontend are not started.
 3. Treasury dashboard and bureau back-office (built on the logs already being collected)
 4. Pole sites and their custom modules — last
 
@@ -268,6 +310,7 @@ Examples:
 - **Simplified (2026-09-07):** a read-only simplicity audit (`AUDIT-simplicity.md`) flagged `googleapis` as an oversized dependency for the single Drive upload call it was used for (it bundles generated clients for hundreds of unrelated Google APIs). Swapped for `google-auth-library` (auth only) + a plain `fetch` call to the Drive v3 upload endpoint — see **Audit Log Export** above. Verified via `pnpm run build` and the full backend test suite (63 tests, including a rewritten `googleDrive.test.ts`) passing after the swap.
 - **Corrected (2026-09-07):** the initial deployment prep (same day, see **Deployment (production)**) wrongly assumed the target Debian machine was clean and included a standalone `caddy` service/Dockerfile/Caddyfile. It's actually already running Caddy for another, unrelated project. Corrected to an additive integration: removed `deploy/Dockerfile.caddy` and the standalone `deploy/Caddyfile`/`caddy` compose service; added `deploy/wave.caddy` (a site block meant to be appended to the existing Caddyfile) and a `caddy_net` external Docker network so `backend` is reachable from the existing Caddy container by name. `DEPLOY.md` and this section were updated to match. This is repo-only — nothing was connected to or configured on the real machine.
 - **Added (2026-09-07):** per-user QR code generation + retrieval (see **Per-User QR Code**) — `GET /me/qrcode`, a rotating opaque token stored on `PointsAccount` (migration `20260907154756_add_points_account_qr_token`). No new dependency. The buvette scan/deduction endpoint that will consume this payload is a separate future task, not built here. Verified against the real dev Postgres (not just the mocked test suite): confirmed lazy generation + persistence, a stable token across repeat calls within the TTL, and 404 for a caller with no `PointsAccount`.
+- **Added (2026-09-07):** the buvette scan + deduction endpoint (see **Buvette Scan + Deduction**) — `POST /buvette/scan`, the first consumer of the QR payload above and the first live route to produce a real audit log row. No schema changes (product/quantity/unit price recorded in `Transaction.metadata`, not a new FK); no new dependency (`express-rate-limit`, already installed, covers both the general throttle and the QR-replay anti-fraud guard). Points-only — SumUp/card payment and the cashier frontend remain separate future tasks. Verified via the full mocked test suite (`buvette.test.ts`, including a simulated balance-race case) plus `pnpm run build`/`pnpm run lint`; not yet exercised against a real dev Postgres.
 
 ## Open questions
 

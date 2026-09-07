@@ -1,9 +1,10 @@
 import "./config/env.js";
 import express, { type Express, type ErrorRequestHandler } from "express";
 import helmet from "helmet";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { authRouter } from "./routes/auth.js";
 import { meRouter } from "./routes/me.js";
+import { buvetteRouter } from "./routes/buvette.js";
 import { auditLog } from "./middleware/index.js";
 
 function clientErrorStatus(err: unknown): number | undefined {
@@ -58,6 +59,34 @@ export function createApp(): Express {
     message: { error: "too many requests, try again later" },
   });
 
+  // General throttle on the buvette scan endpoint (per-IP, same as the two
+  // limiters above) — guards against a runaway till client or a compromised
+  // operator session hammering the endpoint.
+  const buvetteScanRateLimit = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "too many requests, try again shortly" },
+  });
+
+  // Anti-fraud replay guard: the exact same scanned QR value can only be
+  // attempted once per 3 seconds, keyed on the request body rather than the
+  // caller's IP. Falls back to ipKeyGenerator (not raw req.ip) when the body
+  // is missing/malformed, per express-rate-limit's own guidance for a custom
+  // keyGenerator that falls back to IP.
+  const buvetteQrReplayRateLimit = rateLimit({
+    windowMs: 3 * 1000,
+    limit: 1,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => {
+      const qrPayload = (req.body as { qrPayload?: unknown } | undefined)?.qrPayload;
+      return typeof qrPayload === "string" && qrPayload ? `qr:${qrPayload}` : ipKeyGenerator(req.ip!);
+    },
+    message: { error: "duplicate scan, please rescan" },
+  });
+
   app.use(helmet());
   app.use(express.json({ limit: "100kb" }));
   app.use(auditLog);
@@ -70,6 +99,8 @@ export function createApp(): Express {
   app.use(["/auth/refresh", "/auth/logout"], refreshLogoutRateLimit);
   app.use("/auth", authRouter);
   app.use("/me", meRouter);
+  app.use("/buvette/scan", buvetteScanRateLimit, buvetteQrReplayRateLimit);
+  app.use("/buvette", buvetteRouter);
 
   app.use(errorHandler);
 
