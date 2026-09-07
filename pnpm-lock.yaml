@@ -41,9 +41,9 @@ importers:
       express-rate-limit:
         specifier: ^8.7.0
         version: 8.7.0(express@4.22.2(supports-color@7.2.0))(supports-color@7.2.0)
-      googleapis:
-        specifier: ^178.0.0
-        version: 178.0.0(supports-color@7.2.0)
+      google-auth-library:
+        specifier: ^10.5.0
+        version: 10.5.0(supports-color@7.2.0)
       helmet:
         specifier: ^8.3.0
         version: 8.3.0
@@ -1937,14 +1937,6 @@ packages:
     resolution: {integrity: sha512-WE9av4wKDZgRjBwgVUabocx8T6/7o3Ca1Fat46FXDhXVAFibzNadedcOXrdgd1Kzmk8tsk/9ZH89Wyf/SqeZ3A==}
     engines: {node: '>=18'}
 
-  googleapis-common@8.0.3:
-    resolution: {integrity: sha512-7g1yzQKx0mmNTjiK0H9dJ8eqKqDBveES9vLHeg5neb3BMQy/d1oQefIMhIpOVT8a+f+LOcixMEdRbFIW/cQUJw==}
-    engines: {node: '>=18'}
-
-  googleapis@178.0.0:
-    resolution: {integrity: sha512-IxI9G8s2p83jvbrAKYY5gzY+j/m+bgJap8kAYsCRW/xkTYTTOAzVEYtGsHJum8EGOcraA25iZ+JKwhdXrZioJQ==}
-    engines: {node: '>=18'}
-
   gopd@1.2.0:
     resolution: {integrity: sha512-ZUKRh6/kUFoAiTAtTYPZJ3hw9wNxx+BIBOijnlG9PnrJsCcSjs1wyyD6vJpaYtgnzDrKYRSqf3OO6Rfa93xsRg==}
     engines: {node: '>= 0.4'}
@@ -2672,9 +2664,6 @@ packages:
 
   uri-js@4.4.1:
     resolution: {integrity: sha512-7rKUyy33Q1yc98pQ1DAmLtwX109F7TIfWlW1Ydo8Wl1ii1SeHieeh0HHfPeL2fMXK6z0s8ecKs9frCuLJvndBg==}
-
-  url-template@2.0.8:
-    resolution: {integrity: sha512-XdVKMF4SJ0nP/O7XIPB0JwAEuT9lDIYnNsK8yGVe43y0AWoKeJNdv3ZNWh7ksJ6KqQFjOO6ox/VEitLnaVNufw==}
 
   util-deprecate@1.0.2:
     resolution: {integrity: sha512-EPD5q1uXyFxJpCrLnCc1nHnq3gOa6DZBocAIiI2TaSCA7VCJ1UJDMagCzIkXNsUYfD1daK//LTEQ8xiIbrHtcw==}
@@ -4362,24 +4351,6 @@ snapshots:
 
   google-logging-utils@1.2.0: {}
 
-  googleapis-common@8.0.3(supports-color@7.2.0):
-    dependencies:
-      extend: 3.0.2
-      gaxios: 7.1.3(supports-color@7.2.0)
-      google-auth-library: 10.5.0(supports-color@7.2.0)
-      google-logging-utils: 1.1.3
-      qs: 6.16.0
-      url-template: 2.0.8
-    transitivePeerDependencies:
-      - supports-color
-
-  googleapis@178.0.0(supports-color@7.2.0):
-    dependencies:
-      google-auth-library: 10.5.0(supports-color@7.2.0)
-      googleapis-common: 8.0.3(supports-color@7.2.0)
-    transitivePeerDependencies:
-      - supports-color
-
   gopd@1.2.0: {}
 
   gtoken@8.0.0(supports-color@7.2.0):
@@ -5101,8 +5072,6 @@ snapshots:
   uri-js@4.4.1:
     dependencies:
       punycode: 2.3.1
-
-  url-template@2.0.8: {}
 
   util-deprecate@1.0.2: {}
 
