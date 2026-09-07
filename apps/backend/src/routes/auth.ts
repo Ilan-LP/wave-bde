@@ -26,11 +26,12 @@ function issueTokenPair(user: Pick<User, "id">, member: Pick<Member, "id" | "rol
 }
 
 authRouter.post("/login", async (req, res) => {
-  const { email, password } = req.body as { email?: unknown; password?: unknown };
-  if (typeof email !== "string" || typeof password !== "string") {
+  const { email: rawEmail, password } = req.body as { email?: unknown; password?: unknown };
+  if (typeof rawEmail !== "string" || typeof password !== "string") {
     res.status(400).json({ error: "email and password are required" });
     return;
   }
+  const email = rawEmail.trim().toLowerCase();
 
   const user = await prisma.user.findUnique({
     where: { email },
