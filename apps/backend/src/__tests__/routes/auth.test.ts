@@ -108,6 +108,24 @@ describe("POST /auth/login", () => {
     expect(res.status).toBe(401);
     expect(verifyPasswordMock).toHaveBeenCalledWith("wrong", user.passwordHash);
   });
+
+  it("normalizes email case/whitespace before the lookup", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    userFindUnique.mockResolvedValue(user as any);
+    verifyPasswordMock.mockResolvedValue(true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    refreshTokenCreate.mockResolvedValue({} as any);
+
+    const res = await supertest(makeApp())
+      .post("/auth/login")
+      .send({ email: "  A@Example.COM  ", password: "correct" });
+
+    expect(res.status).toBe(200);
+    expect(userFindUnique).toHaveBeenCalledWith({
+      where: { email: "a@example.com" },
+      include: { member: true },
+    });
+  });
 });
 
 describe("POST /auth/refresh", () => {
