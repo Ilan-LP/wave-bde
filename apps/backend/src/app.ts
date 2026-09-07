@@ -1,7 +1,9 @@
 import "./config/env.js";
 import express, { type Express, type ErrorRequestHandler } from "express";
 import helmet from "helmet";
+import cors from "cors";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
+import { env } from "./config/env.js";
 import { authRouter } from "./routes/auth.js";
 import { meRouter } from "./routes/me.js";
 import { buvetteRouter } from "./routes/buvette.js";
@@ -39,6 +41,13 @@ const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
 
 export function createApp(): Express {
   const app = express();
+
+  // Trust exactly one hop: the shared edge Caddy instance this backend sits
+  // behind in production. Needed for rate-limiting and audit-log IPs to see
+  // the real client IP (req.ip) instead of the proxy's. Do not raise this
+  // past 1 without also confirming the real proxy chain in front of it —
+  // see CLAUDE.md's Deployment section.
+  app.set("trust proxy", 1);
 
   const loginRateLimit = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -88,6 +97,8 @@ export function createApp(): Express {
   });
 
   app.use(helmet());
+  // No credentials/cookies needed — auth is Bearer-token only.
+  app.use(cors({ origin: env.corsOrigins }));
   app.use(express.json({ limit: "100kb" }));
   app.use(auditLog);
 

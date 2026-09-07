@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 const ORIGINAL_JWT_SECRET = process.env.JWT_SECRET;
 const ORIGINAL_JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
+const ORIGINAL_GOOGLE_SERVICE_ACCOUNT_JSON = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+const ORIGINAL_GOOGLE_DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
 
 describe("config/env", () => {
   beforeEach(() => {
@@ -11,6 +13,8 @@ describe("config/env", () => {
   afterEach(() => {
     process.env.JWT_SECRET = ORIGINAL_JWT_SECRET;
     process.env.JWT_REFRESH_SECRET = ORIGINAL_JWT_REFRESH_SECRET;
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = ORIGINAL_GOOGLE_SERVICE_ACCOUNT_JSON;
+    process.env.GOOGLE_DRIVE_FOLDER_ID = ORIGINAL_GOOGLE_DRIVE_FOLDER_ID;
   });
 
   it("throws when JWT_SECRET is missing", async () => {
@@ -46,5 +50,18 @@ describe("config/env", () => {
     process.env.JWT_REFRESH_SECRET = "a-refresh-secret-32-chars-min-xx";
 
     await expect(import("../../config/env.js")).resolves.toBeDefined();
+  });
+
+  it("boots with GOOGLE_SERVICE_ACCOUNT_JSON/GOOGLE_DRIVE_FOLDER_ID unset, marking Drive export unconfigured", async () => {
+    process.env.JWT_SECRET = "an-access-secret-32-chars-min-xxx";
+    process.env.JWT_REFRESH_SECRET = "a-refresh-secret-32-chars-min-xx";
+    delete process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+    delete process.env.GOOGLE_DRIVE_FOLDER_ID;
+
+    const { env } = await import("../../config/env.js");
+
+    expect(env.googleServiceAccount).toBeUndefined();
+    expect(env.googleDriveFolderId).toBeUndefined();
+    expect(env.isGoogleDriveConfigured).toBe(false);
   });
 });

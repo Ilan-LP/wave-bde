@@ -1,3 +1,4 @@
+import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
 import { uploadJsonExport } from "./googleDrive.js";
 
@@ -15,6 +16,13 @@ function toFilenameTimestamp(date: Date): string {
  * (with overlap) on the next scheduled run instead of silently losing rows.
  */
 export async function runAuditLogExport(): Promise<void> {
+  if (!env.isGoogleDriveConfigured) {
+    console.log(
+      "[audit-export] GOOGLE_SERVICE_ACCOUNT_JSON/GOOGLE_DRIVE_FOLDER_ID not set, skipping export",
+    );
+    return;
+  }
+
   const runStartedAt = new Date();
   const cursor = await prisma.auditExportCursor.findUnique({ where: { id: CURSOR_ID } });
   const lastExportedAt = cursor?.lastExportedAt ?? undefined;

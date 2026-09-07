@@ -1,7 +1,11 @@
 services:
-  postgres:
+  # Named `db` (not `postgres`) — /opt/proxy/backup.sh on the deployment
+  # machine expects the Postgres service to be named exactly this to detect
+  # and back it up. That script lives outside this repo and is not modified
+  # here; this naming is how this repo stays compatible with it.
+  db:
     image: postgres:16-alpine
-    container_name: wave-postgres-prod
+    container_name: wave-db
     restart: unless-stopped
     environment:
       # No insecure defaults here (unlike docker-compose.yml's dev file) —
@@ -10,40 +14,66 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-    # No host port published — only the backend (over the internal Docker
-    # network) needs to reach Postgres in production.
+    # No host port published — only the backend and the one-shot migrate
+    # service (both on the internal network) need to reach Postgres.
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - wave_db:/var/lib/postgresql/data
+    networks:
+      - internal
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
+  # One-shot: applies pending Prisma migrations before the backend starts.
+  # Built from the backend Dockerfile's `build` stage (not `runtime`) on
+  # purpose — the runtime image prunes devDependencies, so the `prisma` CLI
+  # isn't in it; the `build` stage still has it and has already run
+  # `prisma generate`.
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+      target: build
+    container_name: wave-migrate
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    command: ["pnpm", "--filter", "@wave/backend", "exec", "prisma", "migrate", "deploy"]
+    networks:
+      - internal
+    depends_on:
+      db:
+        condition: service_healthy
+
   backend:
     build:
       context: .
       dockerfile: apps/backend/Dockerfile
-    container_name: wave-backend-prod
+    container_name: wave-backend
     restart: unless-stopped
     depends_on:
-      postgres:
+      db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
       PORT: ${BACKEND_PORT:-3000}
-      # Assembled from the postgres service's own env vars (not read from a
-      # host-side DATABASE_URL) so it always resolves to the `postgres`
-      # service hostname on the compose network.
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # Assembled from the db service's own env vars (not read from a
+      # host-side DATABASE_URL) so it always resolves to the `db` service
+      # hostname on the compose network.
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       JWT_SECRET: ${JWT_SECRET}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
-      GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON}
-      GOOGLE_DRIVE_FOLDER_ID: ${GOOGLE_DRIVE_FOLDER_ID}
-    # No host port published — this machine already runs a separate Caddy
-    # container (for another, unrelated project) that owns ports 80/443.
-    # That existing Caddy reaches this service over the shared external
-    # network below, by container name (wave-backend-prod) — see
-    # deploy/wave.caddy and DEPLOY.md.
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      # Optional — see apps/backend/src/config/env.ts. The daily Drive
+      # export just skips/no-ops if these are left unset in .env.production.
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON:-}
+      GOOGLE_DRIVE_FOLDER_ID: ${GOOGLE_DRIVE_FOLDER_ID:-}
+    # No host port published — this machine's shared edge Caddy instance
+    # (a separate project this repo doesn't own or run, see deploy/ and
+    # DEPLOY.md) reaches this service by container name over the `edge`
+    # network below.
     expose:
       - "${BACKEND_PORT:-3000}"
     healthcheck:
@@ -53,18 +83,99 @@ services:
       retries: 5
       start_period: 10s
     networks:
-      - default
-      - caddy_net
+      - internal
+      - edge
+
+  showcase:
+    build:
+      context: .
+      dockerfile: apps/showcase/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+    container_name: wave-showcase
+    restart: unless-stopped
+    expose:
+      - "80"
+    networks:
+      - edge
+
+  bureau:
+    build:
+      context: .
+      dockerfile: apps/bureau/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+    container_name: wave-bureau
+    restart: unless-stopped
+    expose:
+      - "80"
+    networks:
+      - edge
+
+  buvette:
+    build:
+      context: .
+      dockerfile: apps/buvette/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+    container_name: wave-buvette
+    restart: unless-stopped
+    expose:
+      - "80"
+    networks:
+      - edge
+
+  pole-comm:
+    build:
+      context: .
+      dockerfile: apps/pole-comm/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+    container_name: wave-pole-comm
+    restart: unless-stopped
+    expose:
+      - "80"
+    networks:
+      - edge
+
+  pole-events:
+    build:
+      context: .
+      dockerfile: apps/pole-events/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+    container_name: wave-pole-events
+    restart: unless-stopped
+    expose:
+      - "80"
+    networks:
+      - edge
+
+  pole-partenariats:
+    build:
+      context: .
+      dockerfile: apps/pole-partenariats/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+    container_name: wave-pole-partenariats
+    restart: unless-stopped
+    expose:
+      - "80"
+    networks:
+      - edge
 
 networks:
-  # PLACEHOLDER: must match the Docker network the existing Caddy container
-  # (running for another project on this machine) is already attached to —
-  # confirm the real name on the actual machine (e.g. `docker network ls`,
-  # or `docker inspect <existing-caddy-container>`) before deploying. See
-  # DEPLOY.md.
-  caddy_net:
+  # The shared edge Caddy instance already running on this machine (for
+  # other projects too, e.g. "dolibarr") is attached to this network by
+  # name. Every service that needs to be reverse-proxied joins it; nothing
+  # in this repo creates or owns it — confirm it already exists on the
+  # machine before deploying (see DEPLOY.md).
+  edge:
     external: true
-    name: ${CADDY_EXTERNAL_NETWORK:-caddy_net}
+    name: edge
+  # Postgres-only network — never joins `edge`, so Postgres is unreachable
+  # from outside this compose project regardless of the edge Caddy config.
+  internal: {}
 
 volumes:
-  postgres_data:
+  wave_db:

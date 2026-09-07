@@ -1,0 +1,55 @@
+# REFERENCE ONLY — not deployed by this repo, not read by anything in it.
+#
+# This machine's shared edge Caddy instance (a separate project, already
+# running for other sites like "dolibarr") owns one Caddyfile, with one
+# `.caddy` site file per hosted project under /opt/proxy/caddy/sites/. This
+# file is a best-effort sketch of what this project's own site file(s)
+# should look like there, following the described dolibarr.caddy shape
+# (plain `http://` blocks — TLS is terminated upstream by the existing
+# cloudflared tunnel, so this edge Caddy never does ACME/DNS-01 itself).
+#
+# NOT VERIFIED against the real dolibarr.caddy (it lives outside this repo
+# and wasn't read while writing this). In particular, `import common` below
+# is a placeholder for whatever shared header/logging snippet name the real
+# shared Caddyfile actually defines — check that file on the machine and
+# fix the import name before using this.
+#
+# Domain is the wildcard *.bde-wave.com; each service gets its own
+# subdomain. Adjust ports if BACKEND_PORT is overridden in .env.production.
+# Container names below (wave-backend, wave-showcase, ...) come straight
+# from this repo's docker-compose.prod.yml.
+
+http://api.bde-wave.com {
+	import common
+	reverse_proxy wave-backend:3000
+}
+
+http://bde-wave.com, http://www.bde-wave.com {
+	import common
+	reverse_proxy wave-showcase:80
+}
+
+http://bureau.bde-wave.com {
+	import common
+	reverse_proxy wave-bureau:80
+}
+
+http://buvette.bde-wave.com {
+	import common
+	reverse_proxy wave-buvette:80
+}
+
+http://comm.bde-wave.com {
+	import common
+	reverse_proxy wave-pole-comm:80
+}
+
+http://events.bde-wave.com {
+	import common
+	reverse_proxy wave-pole-events:80
+}
+
+http://partenariats.bde-wave.com {
+	import common
+	reverse_proxy wave-pole-partenariats:80
+}

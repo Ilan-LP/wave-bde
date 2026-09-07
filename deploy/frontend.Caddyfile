@@ -1,0 +1,11 @@
+# Shared Caddy config baked into every frontend's runtime image (see
+# apps/*/Dockerfile). Serves the static Vite build with SPA fallback so
+# client-side routes don't 404 on a hard refresh. One file, copied
+# identically into all 6 frontend images — not per-app config.
+
+:80 {
+	root * /usr/share/caddy
+	file_server
+	try_files {path} /index.html
+	encode gzip
+}

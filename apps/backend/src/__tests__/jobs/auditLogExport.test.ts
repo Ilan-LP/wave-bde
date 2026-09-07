@@ -92,3 +92,26 @@ describe("runAuditLogExport", () => {
     expect(upsertCursor).not.toHaveBeenCalled();
   });
 });
+
+describe("runAuditLogExport when Google Drive is not configured", () => {
+  afterEach(() => {
+    vi.doUnmock("../../config/env.js");
+  });
+
+  it("logs and returns without touching the database or Drive", async () => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    vi.doMock("../../config/env.js", () => ({ env: { isGoogleDriveConfigured: false } }));
+
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    const { runAuditLogExport: run } = await import("../../jobs/auditLogExport.js");
+
+    await run();
+
+    expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining("skipping export"));
+    expect(findCursor).not.toHaveBeenCalled();
+    expect(upload).not.toHaveBeenCalled();
+
+    consoleLog.mockRestore();
+  });
+});

@@ -1,4 +1,5 @@
-# Docker build context ignores (root context, used by apps/backend/Dockerfile)
+# Docker build context ignores (root context, used by apps/backend/Dockerfile
+# and every apps/<frontend>/Dockerfile — all share this one repo-root context)
 
 **/node_modules
 **/dist

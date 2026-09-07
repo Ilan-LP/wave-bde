@@ -9,6 +9,9 @@ const DRIVE_UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files?uploa
 const MULTIPART_BOUNDARY = "wave-bde-audit-export";
 
 function getServiceAccountCredentials(): { clientEmail: string; privateKey: string } {
+  if (!env.googleServiceAccount) {
+    throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON is not configured");
+  }
   const { client_email: clientEmail, private_key: privateKey } = env.googleServiceAccount;
   if (typeof clientEmail !== "string" || typeof privateKey !== "string") {
     throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON is missing required fields client_email/private_key");
