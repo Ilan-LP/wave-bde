@@ -3,6 +3,7 @@ import express, { type Express, type ErrorRequestHandler } from "express";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import { authRouter } from "./routes/auth.js";
+import { meRouter } from "./routes/me.js";
 import { auditLog } from "./middleware/index.js";
 
 function clientErrorStatus(err: unknown): number | undefined {
@@ -68,6 +69,7 @@ export function createApp(): Express {
   app.use("/auth/login", loginRateLimit);
   app.use(["/auth/refresh", "/auth/logout"], refreshLogoutRateLimit);
   app.use("/auth", authRouter);
+  app.use("/me", meRouter);
 
   app.use(errorHandler);
 

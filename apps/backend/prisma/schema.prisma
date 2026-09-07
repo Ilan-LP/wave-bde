@@ -172,6 +172,13 @@ model PointsAccount {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Opaque, randomly-generated buvette scan token — deliberately not the
+  // User/PointsAccount id or email (both already appear elsewhere in the
+  // API/JWT), so leaking those doesn't let anyone forge a QR code.
+  // Rotates on a TTL (see src/lib/qrToken.ts) rather than staying static.
+  qrToken          String?   @unique
+  qrTokenExpiresAt DateTime?
+
   transactions Transaction[]
 }
 
@@ -199,6 +206,19 @@ enum TransactionType {
   EVENT_REWARD
   ADJUSTMENT
   REFUND
+}
+
+// ---------------------------------------------------------------------------
+// Products
+// ---------------------------------------------------------------------------
+
+model Product {
+  id          String   @id @default(cuid())
+  name        String
+  pricePoints Int
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 // ---------------------------------------------------------------------------
