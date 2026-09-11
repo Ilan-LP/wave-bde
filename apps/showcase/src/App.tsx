@@ -2,12 +2,15 @@ import { useState } from "react";
 import { useAuth } from "@wave/auth-client";
 import { authClient } from "./lib/authClient";
 import { LoginScreen } from "./screens/LoginScreen";
+import { RegisterScreen } from "./screens/RegisterScreen";
 import { ProfileScreen } from "./screens/ProfileScreen";
 
 type Tab = "home" | "profil";
+type AuthView = "login" | "register";
 
 function App() {
   const [tab, setTab] = useState<Tab>("home");
+  const [authView, setAuthView] = useState<AuthView>("login");
   const auth = useAuth(authClient);
 
   return (
@@ -35,7 +38,13 @@ function App() {
 
       {tab === "profil" && (
         <main className="flex flex-1 flex-col bg-white">
-          {auth.isAuthenticated ? <ProfileScreen auth={auth} /> : <LoginScreen auth={auth} />}
+          {auth.isAuthenticated ? (
+            <ProfileScreen auth={auth} />
+          ) : authView === "login" ? (
+            <LoginScreen auth={auth} onShowRegister={() => setAuthView("register")} />
+          ) : (
+            <RegisterScreen auth={auth} onShowLogin={() => setAuthView("login")} />
+          )}
         </main>
       )}
     </div>

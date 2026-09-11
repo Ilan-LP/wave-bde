@@ -1,4 +1,4 @@
-import type { AuthSession, AuthUser } from "./types.js";
+import type { AuthSession, AuthUser, RegisterInput } from "./types.js";
 import { loadSession, saveSession, clearSession } from "./tokenStorage.js";
 
 // Treat the access token as due for refresh slightly before its real expiry
@@ -15,6 +15,13 @@ interface TokenPairResponseBody {
 export interface AuthClient {
   getSession(): AuthSession | null;
   login(email: string, password: string): Promise<AuthSession>;
+  /**
+   * Registers a new self-service account, then immediately logs in with the
+   * same credentials — POST /auth/register issues no tokens of its own (see
+   * CLAUDE.md's Authentication section), so this reuses the existing login()
+   * flow rather than duplicating session handling.
+   */
+  register(input: RegisterInput): Promise<AuthSession>;
   logout(): Promise<void>;
   getValidAccessToken(): Promise<string | null>;
   /** Attaches a valid Authorization header, refreshing first if needed. */
@@ -69,6 +76,18 @@ export function createAuthClient(apiUrl: string): AuthClient {
     const next = toSession((await res.json()) as TokenPairResponseBody);
     setSession(next);
     return next;
+  }
+
+  async function register(input: RegisterInput): Promise<AuthSession> {
+    const res = await fetch(`${apiUrl}/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) {
+      throw new Error(await readErrorMessage(res));
+    }
+    return login(input.email, input.password);
   }
 
   async function logout(): Promise<void> {
@@ -140,6 +159,7 @@ export function createAuthClient(apiUrl: string): AuthClient {
   return {
     getSession: () => session,
     login,
+    register,
     logout,
     getValidAccessToken,
     authorizedFetch,

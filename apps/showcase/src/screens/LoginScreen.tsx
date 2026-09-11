@@ -4,9 +4,10 @@ import { Banner, Button } from "@wave/ui";
 
 interface LoginScreenProps {
   auth: UseAuthResult;
+  onShowRegister: () => void;
 }
 
-export function LoginScreen({ auth }: LoginScreenProps) {
+export function LoginScreen({ auth, onShowRegister }: LoginScreenProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
@@ -55,6 +56,13 @@ export function LoginScreen({ auth }: LoginScreenProps) {
         <Button type="submit" size="lg" className="w-full" disabled={auth.isLoggingIn}>
           {auth.isLoggingIn ? "Logging in…" : "Log in"}
         </Button>
+        <button
+          type="button"
+          onClick={onShowRegister}
+          className="w-full text-center text-sm font-medium text-wave underline"
+        >
+          No account yet? Create one
+        </button>
       </form>
     </div>
   );
