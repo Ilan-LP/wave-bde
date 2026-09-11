@@ -130,6 +130,26 @@ describe("POST /buvette/scan", () => {
     expect(res.status).toBe(400);
   });
 
+  it("returns 400 when quantity exceeds the upper bound", async () => {
+    const res = await supertest(makeApp())
+      .post("/buvette/scan")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ qrPayload: "wave:v1:valid-token", productId: "product-1", quantity: 999_999_999 });
+
+    expect(res.status).toBe(400);
+    expect(pointsAccountFindUnique).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when customAmount exceeds the upper bound", async () => {
+    const res = await supertest(makeApp())
+      .post("/buvette/scan")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ qrPayload: "wave:v1:valid-token", customAmount: 999_999_999 });
+
+    expect(res.status).toBe(400);
+    expect(pointsAccountFindUnique).not.toHaveBeenCalled();
+  });
+
   it("returns 401 when the QR token is unknown", async () => {
     pointsAccountFindUnique.mockResolvedValue(null);
 
@@ -308,5 +328,29 @@ describe("POST /buvette/scan", () => {
       .send({ qrPayload: "wave:v1:valid-token", productId: "product-1" });
 
     expect(res.status).toBe(201);
+  });
+
+  it("forwards an unexpected error to the error middleware instead of crashing", async () => {
+    // Simulates the exact H1 scenario: something inside the async handler
+    // throws unexpectedly (here, a DB error) after all the 400-level
+    // validation has passed. Without asyncHandler wrapping the route, this
+    // would become an unhandled promise rejection instead of reaching an
+    // error-handling middleware.
+    pointsAccountFindUnique.mockRejectedValue(new Error("db exploded"));
+
+    const app = express();
+    app.use(express.json());
+    app.use("/buvette", buvetteRouter);
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+      res.status(500).json({ error: "internal server error" });
+    });
+
+    const res = await supertest(app)
+      .post("/buvette/scan")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ qrPayload: "wave:v1:valid-token", productId: "product-1" });
+
+    expect(res.status).toBe(500);
   });
 });

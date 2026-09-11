@@ -41,6 +41,21 @@ describe("createApp", () => {
     expect(res.body).toEqual({ error: "bad request" });
   });
 
+  it("returns a clean 500 (not a crash) when a route handler throws unexpectedly", async () => {
+    // Exercises the H1 fix end to end through the real createApp() pipeline:
+    // an unexpected DB error inside an async route handler must reach
+    // app.ts's errorHandler via asyncHandler's next(err) forwarding, not
+    // become an unhandled promise rejection.
+    userFindUnique.mockRejectedValue(new Error("db exploded"));
+
+    const res = await supertest(createApp())
+      .post("/auth/login")
+      .send({ email: "nobody@example.com", password: "whatever" });
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: "internal server error" });
+  });
+
   it("rate-limits /auth/login after the configured attempt count", async () => {
     const app = createApp();
     let lastStatus = 0;

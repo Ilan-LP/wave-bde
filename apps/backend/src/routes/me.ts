@@ -5,6 +5,7 @@ import { authenticate } from "../middleware/index.js";
 import { generateQrPayload, QR_TOKEN_TTL_MS } from "../lib/qrToken.js";
 import { env } from "../config/env.js";
 import { createHostedCheckout, getCheckoutStatus, pointsToAmountMinorUnits, SUMUP_CURRENCY } from "../lib/sumup.js";
+import { asyncHandler } from "../lib/asyncHandler.js";
 
 export const meRouter: ExpressRouter = Router();
 
@@ -19,7 +20,7 @@ const MAX_RECHARGE_POINTS = 3000;
 // abandoned recharge attempt can't be paid out of context much later.
 const CHECKOUT_VALID_MS = 30 * 60 * 1000;
 
-meRouter.get("/balance", authenticate, async (req, res) => {
+meRouter.get("/balance", authenticate, asyncHandler(async (req, res) => {
   const pointsAccount = await prisma.pointsAccount.findUnique({
     where: { userId: req.auth!.sub },
   });
@@ -30,9 +31,9 @@ meRouter.get("/balance", authenticate, async (req, res) => {
   }
 
   res.json({ balance: pointsAccount.balance });
-});
+}));
 
-meRouter.get("/qrcode", authenticate, async (req, res) => {
+meRouter.get("/qrcode", authenticate, asyncHandler(async (req, res) => {
   const pointsAccount = await prisma.pointsAccount.findUnique({
     where: { userId: req.auth!.sub },
   });
@@ -57,13 +58,13 @@ meRouter.get("/qrcode", authenticate, async (req, res) => {
   }
 
   res.json({ qrPayload: qrToken, expiresAt: qrTokenExpiresAt!.toISOString() });
-});
+}));
 
 // Identifies the paying member purely from req.auth.sub (the JWT) — never
 // from anything in the request body — so one member can only ever recharge
 // their own PointsAccount, matching the /qrcode self-service convention
 // above.
-meRouter.post("/recharge", authenticate, async (req, res) => {
+meRouter.post("/recharge", authenticate, asyncHandler(async (req, res) => {
   if (!env.isSumUpConfigured) {
     res.status(503).json({ error: "recharge is not available yet" });
     return;
@@ -125,7 +126,7 @@ meRouter.post("/recharge", authenticate, async (req, res) => {
     amount: amountMinorUnit / 100,
     currency: SUMUP_CURRENCY,
   });
-});
+}));
 
 // Polled by the (future, not-built-here) frontend after the member returns
 // from the SumUp hosted checkout page. Safe to call repeatedly: once a
@@ -133,7 +134,7 @@ meRouter.post("/recharge", authenticate, async (req, res) => {
 // without a second SumUp call or a second credit (see the conditional
 // updateMany below, same race-safety pattern as buvette.ts's scan
 // endpoint).
-meRouter.post("/recharge/:id/confirm", authenticate, async (req, res) => {
+meRouter.post("/recharge/:id/confirm", authenticate, asyncHandler(async (req, res) => {
   const pointsAccount = await prisma.pointsAccount.findUnique({
     where: { userId: req.auth!.sub },
   });
@@ -235,4 +236,4 @@ meRouter.post("/recharge/:id/confirm", authenticate, async (req, res) => {
   res.locals.auditEntityId = transactionId;
 
   res.status(200).json({ status: "CONFIRMED", points: rechargeCheckout.points, newBalance });
-});
+}));

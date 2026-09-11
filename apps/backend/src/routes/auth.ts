@@ -10,6 +10,7 @@ import {
   hashRefreshToken,
   REFRESH_TOKEN_TTL_MS,
 } from "../lib/jwt.js";
+import { asyncHandler } from "../lib/asyncHandler.js";
 
 export const authRouter: ExpressRouter = Router();
 
@@ -33,7 +34,7 @@ function issueTokenPair(user: Pick<User, "id">, member: Pick<Member, "id" | "rol
 // invite/verification step (see CLAUDE.md "Authentication"). Creates a plain
 // self-service User + zero-balance PointsAccount, deliberately no Member —
 // self-registered accounts never get an RBAC role.
-authRouter.post("/register", async (req, res) => {
+authRouter.post("/register", asyncHandler(async (req, res) => {
   const { email: rawEmail, password, firstName, lastName } = req.body as {
     email?: unknown;
     password?: unknown;
@@ -95,9 +96,9 @@ authRouter.post("/register", async (req, res) => {
       lastName: user.lastName,
     },
   });
-});
+}));
 
-authRouter.post("/login", async (req, res) => {
+authRouter.post("/login", asyncHandler(async (req, res) => {
   const { email: rawEmail, password } = req.body as { email?: unknown; password?: unknown };
   if (typeof rawEmail !== "string" || typeof password !== "string") {
     res.status(400).json({ error: "email and password are required" });
@@ -151,9 +152,9 @@ authRouter.post("/login", async (req, res) => {
       poleId: user.member?.poleId ?? null,
     },
   });
-});
+}));
 
-authRouter.post("/refresh", async (req, res) => {
+authRouter.post("/refresh", asyncHandler(async (req, res) => {
   const { refreshToken } = req.body as { refreshToken?: unknown };
   if (typeof refreshToken !== "string") {
     res.status(400).json({ error: "refreshToken is required" });
@@ -259,9 +260,9 @@ authRouter.post("/refresh", async (req, res) => {
       poleId: user.member?.poleId ?? null,
     },
   });
-});
+}));
 
-authRouter.post("/logout", async (req, res) => {
+authRouter.post("/logout", asyncHandler(async (req, res) => {
   const { refreshToken } = req.body as { refreshToken?: unknown };
   if (typeof refreshToken !== "string") {
     res.status(400).json({ error: "refreshToken is required" });
@@ -275,4 +276,4 @@ authRouter.post("/logout", async (req, res) => {
   });
 
   res.status(204).send();
-});
+}));

@@ -2,16 +2,25 @@ import { createHash } from "node:crypto";
 import { Router, type Router as ExpressRouter } from "express";
 import { prisma } from "../lib/prisma.js";
 import { authenticate, requireRole } from "../middleware/index.js";
+import { asyncHandler } from "../lib/asyncHandler.js";
 
 export const buvetteRouter: ExpressRouter = Router();
 
 const INSUFFICIENT_BALANCE_ROLLBACK = "INSUFFICIENT_BALANCE_ROLLBACK";
 
+// Sanity ceilings, not business-mandated limits — guard against an Int4
+// overflow in totalPrice (pricePoints * quantity) once written to
+// Transaction.amount / decremented from PointsAccount.balance. Worst case
+// with both at their max is 100,000 * 100 = 10,000,000, far under Int4's
+// ~2.1 billion ceiling. Adjust freely.
+const MAX_CUSTOM_AMOUNT = 100_000;
+const MAX_QUANTITY = 100;
+
 buvetteRouter.post(
   "/scan",
   authenticate,
   requireRole("RESPONSABLE_POLE", "MEMBRE_POLE"),
-  async (req, res) => {
+  asyncHandler(async (req, res) => {
     const {
       qrPayload,
       productId,
@@ -38,8 +47,13 @@ buvetteRouter.post(
     }
 
     if (hasCustomAmount) {
-      if (typeof rawCustomAmount !== "number" || !Number.isInteger(rawCustomAmount) || rawCustomAmount < 1) {
-        res.status(400).json({ error: "customAmount must be a positive integer" });
+      if (
+        typeof rawCustomAmount !== "number" ||
+        !Number.isInteger(rawCustomAmount) ||
+        rawCustomAmount < 1 ||
+        rawCustomAmount > MAX_CUSTOM_AMOUNT
+      ) {
+        res.status(400).json({ error: `customAmount must be an integer between 1 and ${MAX_CUSTOM_AMOUNT}` });
         return;
       }
       if (rawQuantity !== undefined) {
@@ -50,8 +64,13 @@ buvetteRouter.post(
 
     let quantity = 1;
     if (hasProductId && rawQuantity !== undefined) {
-      if (typeof rawQuantity !== "number" || !Number.isInteger(rawQuantity) || rawQuantity < 1) {
-        res.status(400).json({ error: "quantity must be a positive integer" });
+      if (
+        typeof rawQuantity !== "number" ||
+        !Number.isInteger(rawQuantity) ||
+        rawQuantity < 1 ||
+        rawQuantity > MAX_QUANTITY
+      ) {
+        res.status(400).json({ error: `quantity must be an integer between 1 and ${MAX_QUANTITY}` });
         return;
       }
       quantity = rawQuantity;
@@ -152,5 +171,5 @@ buvetteRouter.post(
       newBalance,
       customerUserId: pointsAccount.userId,
     });
-  },
+  }),
 );
