@@ -61,3 +61,34 @@ export interface SetProductActiveRequest {
 export interface SetProductActiveResponse {
   product: ProductAdmin;
 }
+
+export interface BalanceResponse {
+  balance: number;
+}
+
+export interface QrCodeResponse {
+  qrPayload: string;
+  expiresAt: string;
+}
+
+export interface RechargeRequest {
+  points: number;
+}
+
+export interface RechargeResponse {
+  rechargeId: string;
+  checkoutId: string;
+  hostedCheckoutUrl: string;
+  points: number;
+  amount: number;
+  currency: string;
+}
+
+export type RechargeConfirmStatus = "PENDING" | "CONFIRMED" | "FAILED" | "EXPIRED";
+
+export interface RechargeConfirmResponse {
+  status: RechargeConfirmStatus;
+  points?: number;
+  newBalance?: number;
+  error?: string;
+}

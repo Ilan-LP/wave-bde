@@ -48,6 +48,43 @@ function makeToken() {
   return signAccessToken({ sub: "user-1", memberId: "member-1", role: "MEMBRE_POLE", poleId: "pole-1" });
 }
 
+describe("GET /me/balance", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns 401 without a valid access token", async () => {
+    const res = await supertest(makeApp()).get("/me/balance");
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 404 when the caller has no PointsAccount", async () => {
+    pointsAccountFindUnique.mockResolvedValue(null);
+
+    const res = await supertest(makeApp())
+      .get("/me/balance")
+      .set("Authorization", `Bearer ${makeToken()}`);
+
+    expect(res.status).toBe(404);
+  });
+
+  it("returns the caller's current balance", async () => {
+    pointsAccountFindUnique.mockResolvedValue({
+      id: "pa-1",
+      userId: "user-1",
+      balance: 420,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const res = await supertest(makeApp())
+      .get("/me/balance")
+      .set("Authorization", `Bearer ${makeToken()}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ balance: 420 });
+  });
+});
+
 describe("GET /me/qrcode", () => {
   beforeEach(() => {
     vi.resetAllMocks();

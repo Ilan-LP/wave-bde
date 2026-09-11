@@ -19,6 +19,19 @@ const MAX_RECHARGE_POINTS = 3000;
 // abandoned recharge attempt can't be paid out of context much later.
 const CHECKOUT_VALID_MS = 30 * 60 * 1000;
 
+meRouter.get("/balance", authenticate, async (req, res) => {
+  const pointsAccount = await prisma.pointsAccount.findUnique({
+    where: { userId: req.auth!.sub },
+  });
+
+  if (!pointsAccount) {
+    res.status(404).json({ error: "points account not found" });
+    return;
+  }
+
+  res.json({ balance: pointsAccount.balance });
+});
+
 meRouter.get("/qrcode", authenticate, async (req, res) => {
   const pointsAccount = await prisma.pointsAccount.findUnique({
     where: { userId: req.auth!.sub },
