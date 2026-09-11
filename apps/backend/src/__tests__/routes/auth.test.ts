@@ -1,14 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import express from "express";
 import supertest from "supertest";
+import { Prisma } from "@prisma/client";
 import { authRouter } from "../../routes/auth.js";
 import { prisma } from "../../lib/prisma.js";
-import { verifyPassword, verifyDummyPassword } from "../../lib/password.js";
+import { hashPassword, verifyPassword, verifyDummyPassword, validatePasswordStrength } from "../../lib/password.js";
 import { signRefreshToken, hashRefreshToken } from "../../lib/jwt.js";
 
 vi.mock("../../lib/prisma.js", () => ({
   prisma: {
-    user: { findUnique: vi.fn() },
+    user: { findUnique: vi.fn(), create: vi.fn() },
+    pointsAccount: { create: vi.fn() },
     refreshToken: {
       create: vi.fn(),
       findUnique: vi.fn(),
@@ -19,17 +21,22 @@ vi.mock("../../lib/prisma.js", () => ({
 }));
 
 vi.mock("../../lib/password.js", () => ({
+  hashPassword: vi.fn(),
   verifyPassword: vi.fn(),
   verifyDummyPassword: vi.fn(),
+  validatePasswordStrength: vi.fn(),
 }));
 
 const userFindUnique = vi.mocked(prisma.user.findUnique);
+const userCreate = vi.mocked(prisma.user.create);
 const refreshTokenCreate = vi.mocked(prisma.refreshToken.create);
 const refreshTokenFindUnique = vi.mocked(prisma.refreshToken.findUnique);
 const refreshTokenUpdateMany = vi.mocked(prisma.refreshToken.updateMany);
 const transaction = vi.mocked(prisma.$transaction);
 const verifyPasswordMock = vi.mocked(verifyPassword);
 const verifyDummyPasswordMock = vi.mocked(verifyDummyPassword);
+const hashPasswordMock = vi.mocked(hashPassword);
+const validatePasswordStrengthMock = vi.mocked(validatePasswordStrength);
 
 function makeApp() {
   const app = express();
@@ -48,6 +55,93 @@ const user = {
   passwordHash: "hashed",
   member,
 };
+
+describe("POST /auth/register", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    validatePasswordStrengthMock.mockReturnValue(null);
+    hashPasswordMock.mockResolvedValue("hashed-password");
+  });
+
+  function mockTransactionSuccess() {
+    transaction.mockImplementation(async (fn) => {
+      const tx = {
+        user: { create: userCreate },
+        pointsAccount: { create: vi.fn().mockResolvedValue({}) },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any;
+      return fn(tx);
+    });
+  }
+
+  it("creates a User + zero-balance PointsAccount and returns 201, no tokens", async () => {
+    mockTransactionSuccess();
+    userCreate.mockResolvedValue({
+      id: "user-new",
+      email: "new@example.com",
+      firstName: "New",
+      lastName: "User",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const res = await supertest(makeApp())
+      .post("/auth/register")
+      .send({ email: "New@Example.com", password: "longenoughpw", firstName: "New", lastName: "User" });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({
+      user: { id: "user-new", email: "new@example.com", firstName: "New", lastName: "User" },
+    });
+    expect(res.body.accessToken).toBeUndefined();
+    expect(hashPasswordMock).toHaveBeenCalledWith("longenoughpw");
+  });
+
+  it("rejects a missing field with 400", async () => {
+    const res = await supertest(makeApp())
+      .post("/auth/register")
+      .send({ email: "a@b.com", password: "longenoughpw", firstName: "A" });
+
+    expect(res.status).toBe(400);
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed email with 400", async () => {
+    const res = await supertest(makeApp())
+      .post("/auth/register")
+      .send({ email: "not-an-email", password: "longenoughpw", firstName: "A", lastName: "B" });
+
+    expect(res.status).toBe(400);
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects a weak password with 400 from validatePasswordStrength", async () => {
+    validatePasswordStrengthMock.mockReturnValue("password must be at least 8 characters");
+
+    const res = await supertest(makeApp())
+      .post("/auth/register")
+      .send({ email: "a@b.com", password: "short", firstName: "A", lastName: "B" });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "password must be at least 8 characters" });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects a duplicate email with 409", async () => {
+    transaction.mockImplementation(async () => {
+      throw new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+        code: "P2002",
+        clientVersion: "test",
+      });
+    });
+
+    const res = await supertest(makeApp())
+      .post("/auth/register")
+      .send({ email: "dup@example.com", password: "longenoughpw", firstName: "A", lastName: "B" });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: "email already registered" });
+  });
+});
 
 describe("POST /auth/login", () => {
   beforeEach(() => {
@@ -77,6 +171,23 @@ describe("POST /auth/login", () => {
     expect(res.status).toBe(401);
     expect(verifyDummyPasswordMock).toHaveBeenCalledWith("whatever");
     expect(verifyPasswordMock).not.toHaveBeenCalled();
+  });
+
+  it("logs in a self-registered User with no Member, role/poleId/memberId null", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    userFindUnique.mockResolvedValue({ ...user, member: null } as any);
+    verifyPasswordMock.mockResolvedValue(true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    refreshTokenCreate.mockResolvedValue({} as any);
+
+    const res = await supertest(makeApp())
+      .post("/auth/login")
+      .send({ email: user.email, password: "correct" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.accessToken).toBeTypeOf("string");
+    expect(res.body.user.role).toBeNull();
+    expect(res.body.user.poleId).toBeNull();
   });
 
   it("issues a token pair on valid credentials", async () => {

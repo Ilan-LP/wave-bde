@@ -1,7 +1,8 @@
 import { Router, type Router as ExpressRouter } from "express";
 import type { Member, User } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
-import { verifyPassword, verifyDummyPassword } from "../lib/password.js";
+import { hashPassword, verifyPassword, verifyDummyPassword, validatePasswordStrength } from "../lib/password.js";
 import {
   signAccessToken,
   signRefreshToken,
@@ -13,17 +14,88 @@ import {
 export const authRouter: ExpressRouter = Router();
 
 const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
+const EMAIL_FORMAT = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function issueTokenPair(user: Pick<User, "id">, member: Pick<Member, "id" | "role" | "poleId">) {
+// null for a self-registered User with no Member/RBAC role — see
+// CLAUDE.md "Authentication" for why null rather than a sentinel enum value.
+function issueTokenPair(user: Pick<User, "id">, member: Pick<Member, "id" | "role" | "poleId"> | null) {
   const accessToken = signAccessToken({
     sub: user.id,
-    memberId: member.id,
-    role: member.role,
-    poleId: member.poleId,
+    memberId: member?.id ?? null,
+    role: member?.role ?? null,
+    poleId: member?.poleId ?? null,
   });
   const { token: refreshToken, tokenHash } = signRefreshToken(user.id);
   return { accessToken, refreshToken, tokenHash };
 }
+
+// Registration is open to anyone — no school-email restriction, no
+// invite/verification step (see CLAUDE.md "Authentication"). Creates a plain
+// self-service User + zero-balance PointsAccount, deliberately no Member —
+// self-registered accounts never get an RBAC role.
+authRouter.post("/register", async (req, res) => {
+  const { email: rawEmail, password, firstName, lastName } = req.body as {
+    email?: unknown;
+    password?: unknown;
+    firstName?: unknown;
+    lastName?: unknown;
+  };
+
+  if (
+    typeof rawEmail !== "string" ||
+    typeof password !== "string" ||
+    typeof firstName !== "string" ||
+    typeof lastName !== "string" ||
+    !firstName.trim() ||
+    !lastName.trim()
+  ) {
+    res.status(400).json({ error: "email, password, firstName, and lastName are required" });
+    return;
+  }
+
+  const email = rawEmail.trim().toLowerCase();
+  if (!EMAIL_FORMAT.test(email)) {
+    res.status(400).json({ error: "email is not a valid email address" });
+    return;
+  }
+
+  const passwordError = validatePasswordStrength(password);
+  if (passwordError) {
+    res.status(400).json({ error: passwordError });
+    return;
+  }
+
+  const passwordHash = await hashPassword(password);
+
+  let user;
+  try {
+    user = await prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({
+        data: { email, passwordHash, firstName: firstName.trim(), lastName: lastName.trim() },
+      });
+      await tx.pointsAccount.create({ data: { userId: created.id } });
+      return created;
+    });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      res.status(409).json({ error: "email already registered" });
+      return;
+    }
+    throw err;
+  }
+
+  res.locals.auditEntityType = "User";
+  res.locals.auditEntityId = user.id;
+
+  res.status(201).json({
+    user: {
+      id: user.id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+    },
+  });
+});
 
 authRouter.post("/login", async (req, res) => {
   const { email: rawEmail, password } = req.body as { email?: unknown; password?: unknown };
@@ -40,7 +112,10 @@ authRouter.post("/login", async (req, res) => {
 
   const invalidCredentials = () => res.status(401).json({ error: "invalid credentials" });
 
-  if (!user || !user.isActive || !user.passwordHash || !user.member || !user.member.isActive) {
+  // A User with no Member at all (a self-registered, no-role account) can
+  // log in fine — only a User whose Member exists but was deactivated is
+  // blocked, same as a deactivated User itself.
+  if (!user || !user.isActive || !user.passwordHash || (user.member && !user.member.isActive)) {
     // Run the same bcrypt cost as a real password check so this path isn't
     // distinguishable by timing from a valid-email/wrong-password attempt.
     await verifyDummyPassword(password);
@@ -72,8 +147,8 @@ authRouter.post("/login", async (req, res) => {
       email: user.email,
       firstName: user.firstName,
       lastName: user.lastName,
-      role: user.member.role,
-      poleId: user.member.poleId,
+      role: user.member?.role ?? null,
+      poleId: user.member?.poleId ?? null,
     },
   });
 });
@@ -123,7 +198,8 @@ authRouter.post("/refresh", async (req, res) => {
   }
 
   const { user } = existing;
-  if (!user.isActive || !user.member || !user.member.isActive) {
+  // Same no-Member-is-fine, deactivated-Member-is-not rule as /login.
+  if (!user.isActive || (user.member && !user.member.isActive)) {
     res.status(401).json({ error: "invalid refresh token" });
     return;
   }
@@ -179,8 +255,8 @@ authRouter.post("/refresh", async (req, res) => {
       email: user.email,
       firstName: user.firstName,
       lastName: user.lastName,
-      role: user.member.role,
-      poleId: user.member.poleId,
+      role: user.member?.role ?? null,
+      poleId: user.member?.poleId ?? null,
     },
   });
 });

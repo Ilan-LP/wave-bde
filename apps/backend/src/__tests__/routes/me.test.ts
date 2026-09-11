@@ -48,6 +48,12 @@ function makeToken() {
   return signAccessToken({ sub: "user-1", memberId: "member-1", role: "MEMBRE_POLE", poleId: "pole-1" });
 }
 
+// A self-registered account: no Member, no RBAC role. Self-service routes
+// must only require `authenticate`, never a role, so this must work.
+function makeNoRoleToken() {
+  return signAccessToken({ sub: "user-1", memberId: null, role: null, poleId: null });
+}
+
 describe("GET /me/balance", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -82,6 +88,22 @@ describe("GET /me/balance", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ balance: 420 });
+  });
+
+  it("a self-registered no-role account can fetch its own balance", async () => {
+    pointsAccountFindUnique.mockResolvedValue({
+      id: "pa-1",
+      userId: "user-1",
+      balance: 0,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const res = await supertest(makeApp())
+      .get("/me/balance")
+      .set("Authorization", `Bearer ${makeNoRoleToken()}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ balance: 0 });
   });
 });
 

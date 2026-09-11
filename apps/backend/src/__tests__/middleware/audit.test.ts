@@ -44,6 +44,11 @@ function makeApp(...extraMiddleware: Array<(req: Request, res: Response, next: (
   app.post("/auth/login", (_req, res) => {
     res.status(200).json({ accessToken: "abc" });
   });
+  app.post("/auth/register", (_req, res) => {
+    res.locals.auditEntityType = "User";
+    res.locals.auditEntityId = "user-new";
+    res.status(201).json({ user: { id: "user-new" } });
+  });
   app.post("/no-id", (_req, res) => {
     res.status(200).json({ ok: true });
   });
@@ -114,11 +119,24 @@ describe("auditLog", () => {
     expect(auditCreate).not.toHaveBeenCalled();
   });
 
-  it("does not log /auth routes", async () => {
+  it("does not log /auth/login, /auth/refresh, or /auth/logout", async () => {
     await supertest(makeApp()).post("/auth/login").send({ email: "a@b.com", password: "x" });
     await flush();
 
     expect(auditCreate).not.toHaveBeenCalled();
+  });
+
+  it("DOES log /auth/register — account creation must be audited", async () => {
+    await supertest(makeApp())
+      .post("/auth/register")
+      .send({ email: "a@b.com", password: "longenoughpw" });
+    await flush();
+
+    expect(auditCreate).toHaveBeenCalledTimes(1);
+    const call = auditCreate.mock.calls[0][0];
+    expect(call.data).toMatchObject({ action: "CREATE", entityType: "User", entityId: "user-new" });
+    const metadata = call.data.metadata as Record<string, unknown>;
+    expect((metadata.requestBody as Record<string, unknown>).password).toBe("[REDACTED]");
   });
 
   it("falls back to entityId 'unknown' when none can be determined", async () => {

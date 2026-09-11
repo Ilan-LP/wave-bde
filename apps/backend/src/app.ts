@@ -58,6 +58,17 @@ export function createApp(): Express {
     message: { error: "too many login attempts, try again later" },
   });
 
+  // Guards against account-creation spam/abuse — registration is open to
+  // anyone (no school-email or invite restriction, see CLAUDE.md
+  // "Authentication"), so this is the only real throttle on bulk sign-ups.
+  const registerRateLimit = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    limit: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "too many registration attempts, try again later" },
+  });
+
   // Looser than login's: these endpoints aren't password-guessing targets
   // (refresh tokens are unguessable, signed JWTs), but each call still does
   // at least one DB round trip, so an explicit cap is cheap insurance.
@@ -119,6 +130,7 @@ export function createApp(): Express {
   });
 
   app.use("/auth/login", loginRateLimit);
+  app.use("/auth/register", registerRateLimit);
   app.use(["/auth/refresh", "/auth/logout"], refreshLogoutRateLimit);
   app.use("/auth", authRouter);
   // Prefix match: also covers /me/recharge/:id/confirm.

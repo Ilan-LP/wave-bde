@@ -9,8 +9,10 @@ export const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 export interface AccessTokenPayload {
   sub: string;
-  memberId: string;
-  role: MemberRole;
+  // Both are null for a self-registered User with no Member/RBAC role — a
+  // plain self-service account, not BDE staff. See CLAUDE.md "Authentication".
+  memberId: string | null;
+  role: MemberRole | null;
   poleId: string | null;
 }
 

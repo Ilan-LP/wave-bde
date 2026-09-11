@@ -3,7 +3,11 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
-const EXCLUDED_PATH_PREFIXES = ["/auth", "/health"];
+// Exact paths, not a prefix match on "/auth" — that would also swallow
+// /auth/register, which must be audited (see CLAUDE.md "Authentication").
+// These three are excluded because they mutate RefreshToken rows, which are
+// already self-documented via revokedAt/replacedByTokenId.
+const EXCLUDED_PATHS = new Set(["/health", "/auth/login", "/auth/refresh", "/auth/logout"]);
 
 const REDACTED_KEYS = new Set([
   "password",
@@ -70,15 +74,16 @@ function inferEntityType(path: string): string {
 /**
  * Logs every mutating (POST/PUT/PATCH/DELETE) request automatically, once
  * the response has finished, without route handlers calling anything.
- * Skips /auth and /health (see CLAUDE.md "Audit Logging") and only logs
- * responses that actually succeeded (statusCode < 400).
+ * Skips /health and /auth/login, /auth/refresh, /auth/logout (see CLAUDE.md
+ * "Audit Logging") and only logs responses that actually succeeded
+ * (statusCode < 400).
  *
  * A handler can opt out of inference without opting out of logging via
  * `res.locals.auditEntityType` / `res.locals.auditEntityId`, or skip audit
  * logging entirely for one route via `res.locals.skipAudit = true`.
  */
 export const auditLog: RequestHandler = (req, res, next) => {
-  if (!MUTATING_METHODS.has(req.method) || EXCLUDED_PATH_PREFIXES.some((p) => req.path.startsWith(p))) {
+  if (!MUTATING_METHODS.has(req.method) || EXCLUDED_PATHS.has(req.path)) {
     next();
     return;
   }

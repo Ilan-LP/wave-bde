@@ -19,8 +19,8 @@ const grantFindUnique = vi.mocked(prisma.poleAccessGrant.findUnique);
 function makeToken(
   overrides: Partial<{
     sub: string;
-    memberId: string;
-    role: "BUREAU" | "RESPONSABLE_POLE" | "MEMBRE_POLE";
+    memberId: string | null;
+    role: "BUREAU" | "RESPONSABLE_POLE" | "MEMBRE_POLE" | null;
     poleId: string | null;
   }> = {},
 ) {
@@ -109,6 +109,22 @@ describe("requireRole", () => {
       .set("Authorization", `Bearer ${makeToken({ role: "BUREAU" })}`);
     expect(res.status).toBe(200);
   });
+
+  it("returns 403 for a no-role (self-registered) token on a BUREAU-only route", async () => {
+    const res = await supertest(makeApp(authenticate, requireRole("BUREAU")))
+      .get("/test")
+      .set("Authorization", `Bearer ${makeToken({ role: null, memberId: null })}`);
+    expect(res.status).toBe(403);
+  });
+
+  it("returns 403 for a no-role (self-registered) token on a RESPONSABLE_POLE/MEMBRE_POLE route", async () => {
+    const res = await supertest(
+      makeApp(authenticate, requireRole("RESPONSABLE_POLE", "MEMBRE_POLE")),
+    )
+      .get("/test")
+      .set("Authorization", `Bearer ${makeToken({ role: null, memberId: null })}`);
+    expect(res.status).toBe(403);
+  });
 });
 
 describe("requirePoleAccess", () => {
@@ -173,6 +189,14 @@ describe("requirePoleAccess", () => {
       .get("/poles/pole-2/data")
       .set("Authorization", `Bearer ${makeToken({ role: "MEMBRE_POLE", poleId: "pole-1" })}`);
     expect(res.status).toBe(403);
+  });
+
+  it("returns 403 for a no-role (self-registered) token without hitting the DB", async () => {
+    const res = await supertest(makeApp(authenticate, requirePoleAccess()))
+      .get("/poles/pole-1/data")
+      .set("Authorization", `Bearer ${makeToken({ role: null, memberId: null, poleId: null })}`);
+    expect(res.status).toBe(403);
+    expect(grantFindUnique).not.toHaveBeenCalled();
   });
 
   it("RESPONSABLE_POLE can access a foreign pole if granted", async () => {

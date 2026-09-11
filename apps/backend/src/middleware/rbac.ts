@@ -8,7 +8,7 @@ export function requireRole(...roles: MemberRole[]): RequestHandler {
       res.status(401).json({ error: "unauthenticated" });
       return;
     }
-    if (req.auth.role === "BUREAU" || roles.includes(req.auth.role)) {
+    if (req.auth.role === "BUREAU" || (req.auth.role !== null && roles.includes(req.auth.role))) {
       next();
       return;
     }
@@ -33,6 +33,12 @@ export function requirePoleAccess(): RequestHandler {
     }
     if (req.auth.poleId === targetPoleId) {
       next();
+      return;
+    }
+    if (!req.auth.memberId) {
+      // No Member at all (a self-registered, no-role account) — there's no
+      // PoleAccessGrant to look up.
+      res.status(403).json({ error: "forbidden" });
       return;
     }
     try {
