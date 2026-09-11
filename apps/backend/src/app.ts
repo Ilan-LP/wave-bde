@@ -6,6 +6,7 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { env } from "./config/env.js";
 import { authRouter } from "./routes/auth.js";
 import { meRouter } from "./routes/me.js";
+import { productsRouter } from "./routes/products.js";
 import { buvetteRouter } from "./routes/buvette.js";
 import { auditLog } from "./middleware/index.js";
 
@@ -110,6 +111,7 @@ export function createApp(): Express {
   app.use(["/auth/refresh", "/auth/logout"], refreshLogoutRateLimit);
   app.use("/auth", authRouter);
   app.use("/me", meRouter);
+  app.use("/products", productsRouter);
   app.use("/buvette/scan", buvetteScanRateLimit, buvetteQrReplayRateLimit);
   app.use("/buvette", buvetteRouter);
 

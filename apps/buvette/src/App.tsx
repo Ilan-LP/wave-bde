@@ -1,9 +1,12 @@
+import { useAuth } from "@wave/auth-client";
+import { authClient } from "./lib/authClient";
+import { LoginScreen } from "./screens/LoginScreen";
+import { TillScreen } from "./screens/TillScreen";
+
 function App() {
-  return (
-    <main className="flex min-h-screen items-center justify-center bg-white">
-      <h1 className="text-2xl font-bold text-wave">Hello Wave — Buvette</h1>
-    </main>
-  );
+  const auth = useAuth(authClient);
+
+  return auth.isAuthenticated ? <TillScreen auth={auth} /> : <LoginScreen auth={auth} />;
 }
 
 export default App;

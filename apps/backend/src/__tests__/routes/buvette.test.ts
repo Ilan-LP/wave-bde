@@ -76,11 +76,47 @@ describe("POST /buvette/scan", () => {
     expect(res.status).toBe(401);
   });
 
-  it("returns 400 when qrPayload or productId is missing", async () => {
+  it("returns 400 when qrPayload is missing", async () => {
     const res = await supertest(makeApp())
       .post("/buvette/scan")
       .set("Authorization", `Bearer ${makeToken()}`)
       .send({ productId: "product-1" });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when neither productId nor customAmount is provided", async () => {
+    const res = await supertest(makeApp())
+      .post("/buvette/scan")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ qrPayload: "wave:v1:valid-token" });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when both productId and customAmount are provided", async () => {
+    const res = await supertest(makeApp())
+      .post("/buvette/scan")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ qrPayload: "wave:v1:valid-token", productId: "product-1", customAmount: 50 });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when customAmount is not a positive integer", async () => {
+    const res = await supertest(makeApp())
+      .post("/buvette/scan")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ qrPayload: "wave:v1:valid-token", customAmount: 0 });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when quantity is provided alongside customAmount", async () => {
+    const res = await supertest(makeApp())
+      .post("/buvette/scan")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ qrPayload: "wave:v1:valid-token", customAmount: 50, quantity: 2 });
 
     expect(res.status).toBe(400);
   });
@@ -217,6 +253,28 @@ describe("POST /buvette/scan", () => {
       quantity: 1,
       amountDeducted: 100,
       newBalance: 900,
+      customerUserId: "customer-user-1",
+    });
+  });
+
+  it("deducts a custom amount and returns null product/quantity on success", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    pointsAccountFindUnique.mockResolvedValue(pointsAccount as any);
+    mockSuccessfulTransaction({ balanceAfter: 950 });
+
+    const res = await supertest(makeApp())
+      .post("/buvette/scan")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ qrPayload: "wave:v1:valid-token", customAmount: 50 });
+
+    expect(res.status).toBe(201);
+    expect(productFindUnique).not.toHaveBeenCalled();
+    expect(res.body).toMatchObject({
+      transactionId: "txn-1",
+      product: null,
+      quantity: null,
+      amountDeducted: 50,
+      newBalance: 950,
       customerUserId: "customer-user-1",
     });
   });

@@ -12,19 +12,44 @@ buvetteRouter.post(
   authenticate,
   requireRole("RESPONSABLE_POLE", "MEMBRE_POLE"),
   async (req, res) => {
-    const { qrPayload, productId, quantity: rawQuantity } = req.body as {
+    const {
+      qrPayload,
+      productId,
+      customAmount: rawCustomAmount,
+      quantity: rawQuantity,
+    } = req.body as {
       qrPayload?: unknown;
       productId?: unknown;
+      customAmount?: unknown;
       quantity?: unknown;
     };
 
-    if (typeof qrPayload !== "string" || !qrPayload || typeof productId !== "string" || !productId) {
-      res.status(400).json({ error: "qrPayload and productId are required" });
+    if (typeof qrPayload !== "string" || !qrPayload) {
+      res.status(400).json({ error: "qrPayload is required" });
       return;
     }
 
+    const hasProductId = typeof productId === "string" && productId.length > 0;
+    const hasCustomAmount = rawCustomAmount !== undefined;
+
+    if (hasProductId === hasCustomAmount) {
+      res.status(400).json({ error: "exactly one of productId or customAmount is required" });
+      return;
+    }
+
+    if (hasCustomAmount) {
+      if (typeof rawCustomAmount !== "number" || !Number.isInteger(rawCustomAmount) || rawCustomAmount < 1) {
+        res.status(400).json({ error: "customAmount must be a positive integer" });
+        return;
+      }
+      if (rawQuantity !== undefined) {
+        res.status(400).json({ error: "quantity is not allowed with customAmount" });
+        return;
+      }
+    }
+
     let quantity = 1;
-    if (rawQuantity !== undefined) {
+    if (hasProductId && rawQuantity !== undefined) {
       if (typeof rawQuantity !== "number" || !Number.isInteger(rawQuantity) || rawQuantity < 1) {
         res.status(400).json({ error: "quantity must be a positive integer" });
         return;
@@ -39,17 +64,23 @@ buvetteRouter.post(
       return;
     }
 
-    const product = await prisma.product.findUnique({ where: { id: productId } });
-    if (!product) {
-      res.status(404).json({ error: "product not found" });
-      return;
-    }
-    if (!product.isActive) {
-      res.status(409).json({ error: "product is not active" });
-      return;
-    }
+    let product: { id: string; name: string; pricePoints: number; isActive: boolean } | null = null;
+    let totalPrice: number;
 
-    const totalPrice = product.pricePoints * quantity;
+    if (hasProductId) {
+      product = await prisma.product.findUnique({ where: { id: productId as string } });
+      if (!product) {
+        res.status(404).json({ error: "product not found" });
+        return;
+      }
+      if (!product.isActive) {
+        res.status(409).json({ error: "product is not active" });
+        return;
+      }
+      totalPrice = product.pricePoints * quantity;
+    } else {
+      totalPrice = rawCustomAmount as number;
+    }
 
     let insufficientBalance = false;
     let transactionId: string | undefined;
@@ -66,24 +97,32 @@ buvetteRouter.post(
           throw new Error(INSUFFICIENT_BALANCE_ROLLBACK);
         }
 
+        // Hash, not the raw token: the QR doesn't rotate on use, so it stays
+        // valid for the rest of its 5-minute TTL — storing it verbatim would
+        // leave a still-usable credential sitting in the ledger, the same
+        // reasoning that keeps RefreshToken storing only tokenHash (see
+        // src/lib/jwt.ts).
+        const qrTokenHash = createHash("sha256").update(qrPayload).digest("hex");
+
         const created = await tx.transaction.create({
           data: {
             pointsAccountId: pointsAccount.id,
             type: "PURCHASE",
             amount: -totalPrice,
-            description: `${product.name} x${quantity}`,
-            metadata: {
-              productId: product.id,
-              productName: product.name,
-              quantity,
-              unitPricePoints: product.pricePoints,
-              // Hash, not the raw token: the QR doesn't rotate on use, so it
-              // stays valid for the rest of its 5-minute TTL — storing it
-              // verbatim would leave a still-usable credential sitting in
-              // the ledger, the same reasoning that keeps RefreshToken
-              // storing only tokenHash (see src/lib/jwt.ts).
-              qrTokenHash: createHash("sha256").update(qrPayload).digest("hex"),
-            },
+            description: product ? `${product.name} x${quantity}` : "Custom amount",
+            metadata: product
+              ? {
+                  productId: product.id,
+                  productName: product.name,
+                  quantity,
+                  unitPricePoints: product.pricePoints,
+                  qrTokenHash,
+                }
+              : {
+                  customAmount: true,
+                  amountPoints: totalPrice,
+                  qrTokenHash,
+                },
           },
         });
         transactionId = created.id;
@@ -107,8 +146,8 @@ buvetteRouter.post(
 
     res.status(201).json({
       transactionId,
-      product: { id: product.id, name: product.name, pricePoints: product.pricePoints },
-      quantity,
+      product: product ? { id: product.id, name: product.name, pricePoints: product.pricePoints } : null,
+      quantity: product ? quantity : null,
       amountDeducted: totalPrice,
       newBalance,
       customerUserId: pointsAccount.userId,
