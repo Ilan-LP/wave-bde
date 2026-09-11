@@ -1,7 +1,7 @@
 import "./config/env.js";
 import { createApp } from "./app.js";
 import { prisma } from "./lib/prisma.js";
-import { scheduleDailyAuditExport } from "./jobs/scheduler.js";
+import { scheduleDailyAuditExport, scheduleRechargeReconciliation } from "./jobs/scheduler.js";
 
 const app = createApp();
 const port = process.env.PORT ?? 3000;
@@ -11,6 +11,7 @@ const server = app.listen(port, () => {
 });
 
 scheduleDailyAuditExport();
+scheduleRechargeReconciliation();
 
 function shutdown(signal: string) {
   console.log(`${signal} received, shutting down`);

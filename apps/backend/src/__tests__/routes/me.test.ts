@@ -17,6 +17,9 @@ vi.mock("../../lib/prisma.js", () => ({
       findUnique: vi.fn(),
       updateMany: vi.fn(),
     },
+    auditLog: {
+      create: vi.fn(),
+    },
     $transaction: vi.fn(),
   },
 }));
@@ -33,6 +36,7 @@ const pointsAccountUpdate = vi.mocked(prisma.pointsAccount.update);
 const rechargeCheckoutCreate = vi.mocked(prisma.rechargeCheckout.create);
 const rechargeCheckoutFindUnique = vi.mocked(prisma.rechargeCheckout.findUnique);
 const rechargeCheckoutUpdateMany = vi.mocked(prisma.rechargeCheckout.updateMany);
+const auditLogCreate = vi.mocked(prisma.auditLog.create);
 const transactionMock = vi.mocked(prisma.$transaction);
 const createHostedCheckoutMock = vi.mocked(createHostedCheckout);
 const getCheckoutStatusMock = vi.mocked(getCheckoutStatus);
@@ -314,6 +318,7 @@ describe("POST /me/recharge/:id/confirm", () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    auditLogCreate.mockResolvedValue({} as never);
   });
 
   it("returns 401 without a valid access token", async () => {
@@ -378,6 +383,12 @@ describe("POST /me/recharge/:id/confirm", () => {
       data: { status: "FAILED" },
     });
     expect(transactionMock).not.toHaveBeenCalled();
+    // AUDIT-security.md M2: a FAILED/EXPIRED transition must reach the audit
+    // log even though the response itself is a 402 (which the generic
+    // auditLog middleware would otherwise skip, since it only logs < 400).
+    expect(auditLogCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ entityType: "RechargeCheckout", entityId: "recharge-1" }) }),
+    );
   });
 
   it("credits points and creates a TOPUP transaction when SumUp reports PAID", async () => {
@@ -394,6 +405,9 @@ describe("POST /me/recharge/:id/confirm", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ status: "CONFIRMED", points: 150, newBalance: 650 });
+    expect(auditLogCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ entityType: "Transaction", entityId: "txn-1" }) }),
+    );
   });
 
   it("does not call SumUp again and does not double-credit when the checkout is already CONFIRMED", async () => {

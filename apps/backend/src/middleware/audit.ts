@@ -72,6 +72,38 @@ function inferEntityType(path: string): string {
 }
 
 /**
+ * The one write path to AuditLog. Extracted so callers outside an Express
+ * request/response cycle (e.g. the recharge reconciliation job, see
+ * src/jobs/rechargeReconciliation.ts) can log through the same code the
+ * `auditLog` middleware below uses, instead of a second divergent
+ * implementation. Fire-and-forget, same as the middleware's own call: never
+ * awaited by the caller, failures are console.error'd, never thrown.
+ */
+export function writeAuditLog(params: {
+  actorId: string | null;
+  action: string;
+  entityType: string;
+  entityId: string;
+  ipAddress?: string | null;
+  metadata?: Prisma.InputJsonValue;
+}): void {
+  prisma.auditLog
+    .create({
+      data: {
+        actorId: params.actorId,
+        action: params.action,
+        entityType: params.entityType,
+        entityId: params.entityId,
+        ipAddress: params.ipAddress ?? null,
+        metadata: params.metadata,
+      },
+    })
+    .catch((err: unknown) => {
+      console.error(`[audit] failed to write audit log for ${params.entityType}:${params.entityId}`, err);
+    });
+}
+
+/**
  * Logs every mutating (POST/PUT/PATCH/DELETE) request automatically, once
  * the response has finished, without route handlers calling anything.
  * Skips /health and /auth/login, /auth/refresh, /auth/logout (see CLAUDE.md
@@ -112,26 +144,20 @@ export const auditLog: RequestHandler = (req, res, next) => {
       entityId = "unknown";
     }
 
-    prisma.auditLog
-      .create({
-        data: {
-          actorId: req.auth?.sub ?? null,
-          action: methodToAction(req.method),
-          entityType,
-          entityId,
-          ipAddress: req.ip ?? null,
-          metadata: {
-            method: req.method,
-            path: req.path,
-            role: req.auth?.role ?? null,
-            requestBody: redact(req.body),
-            responseBody: redact(responseBody),
-          },
-        },
-      })
-      .catch((err: unknown) => {
-        console.error(`[audit] failed to write audit log for ${req.method} ${req.path}`, err);
-      });
+    writeAuditLog({
+      actorId: req.auth?.sub ?? null,
+      action: methodToAction(req.method),
+      entityType,
+      entityId,
+      ipAddress: req.ip ?? null,
+      metadata: {
+        method: req.method,
+        path: req.path,
+        role: req.auth?.role ?? null,
+        requestBody: redact(req.body),
+        responseBody: redact(responseBody),
+      },
+    });
   });
 
   next();

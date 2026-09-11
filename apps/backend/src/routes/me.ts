@@ -5,6 +5,7 @@ import { authenticate } from "../middleware/index.js";
 import { generateQrPayload, QR_TOKEN_TTL_MS } from "../lib/qrToken.js";
 import { env } from "../config/env.js";
 import { createHostedCheckout, getCheckoutStatus, pointsToAmountMinorUnits, SUMUP_CURRENCY } from "../lib/sumup.js";
+import { applySumUpCheckoutStatus, CHECKOUT_VALID_MS } from "../lib/recharge.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 
 export const meRouter: ExpressRouter = Router();
@@ -14,11 +15,6 @@ export const meRouter: ExpressRouter = Router();
 // was chosen over fixed presets. Adjust freely.
 const MIN_RECHARGE_POINTS = 1;
 const MAX_RECHARGE_POINTS = 3000;
-
-// How long an unpaid hosted checkout stays payable — mirrors the TTL
-// discipline already used for the buvette QR token (see qrToken.ts), so an
-// abandoned recharge attempt can't be paid out of context much later.
-const CHECKOUT_VALID_MS = 30 * 60 * 1000;
 
 meRouter.get("/balance", authenticate, asyncHandler(async (req, res) => {
   const pointsAccount = await prisma.pointsAccount.findUnique({
@@ -173,67 +169,32 @@ meRouter.post("/recharge/:id/confirm", authenticate, asyncHandler(async (req, re
     return;
   }
 
-  if (sumupStatus === "PENDING") {
+  const resolution = await applySumUpCheckoutStatus({
+    rechargeCheckout,
+    sumupStatus,
+    actorId: req.auth!.sub,
+    ipAddress: req.ip ?? null,
+    source: "confirm-endpoint",
+  });
+
+  if (resolution.outcome === "still-pending") {
     res.status(202).json({ status: "PENDING" });
     return;
   }
 
-  if (sumupStatus !== "PAID") {
-    await prisma.rechargeCheckout.updateMany({
-      where: { id: rechargeCheckout.id, status: "PENDING" },
-      data: { status: sumupStatus === "EXPIRED" ? "EXPIRED" : "FAILED" },
-    });
-    res.status(402).json({ error: "payment failed or was cancelled", status: sumupStatus });
+  if (resolution.outcome === "failed-or-expired") {
+    // applySumUpCheckoutStatus already wrote the audit row for this transition.
+    res.locals.skipAudit = true;
+    res.status(402).json({ error: "payment failed or was cancelled", status: resolution.status });
     return;
   }
 
-  let transactionId: string | undefined;
-  let newBalance: number | undefined;
-  let lostConfirmRace = false;
-
-  await prisma.$transaction(async (tx) => {
-    const flipped = await tx.rechargeCheckout.updateMany({
-      where: { id: rechargeCheckout.id, status: "PENDING" },
-      data: { status: "CONFIRMED", confirmedAt: new Date() },
-    });
-    if (flipped.count === 0) {
-      // Lost the race to a concurrent confirm call — don't credit twice.
-      lostConfirmRace = true;
-      return;
-    }
-
-    await tx.pointsAccount.update({
-      where: { id: pointsAccount.id },
-      data: { balance: { increment: rechargeCheckout.points } },
-    });
-
-    const created = await tx.transaction.create({
-      data: {
-        pointsAccountId: pointsAccount.id,
-        type: "TOPUP",
-        amount: rechargeCheckout.points,
-        description: "SumUp card recharge",
-        metadata: {
-          sumupCheckoutId: rechargeCheckout.sumupCheckoutId,
-          amountMinorUnit: rechargeCheckout.amountMinorUnit,
-          currency: rechargeCheckout.currency,
-        },
-      },
-    });
-    transactionId = created.id;
-
-    const account = await tx.pointsAccount.findUnique({ where: { id: pointsAccount.id } });
-    newBalance = account?.balance;
-  });
-
-  if (lostConfirmRace) {
-    const account = await prisma.pointsAccount.findUnique({ where: { id: pointsAccount.id } });
-    res.status(200).json({ status: "CONFIRMED", points: rechargeCheckout.points, newBalance: account?.balance });
+  if (resolution.outcome === "already-confirmed") {
+    res.status(200).json({ status: "CONFIRMED", points: rechargeCheckout.points, newBalance: resolution.newBalance });
     return;
   }
 
-  res.locals.auditEntityType = "Transaction";
-  res.locals.auditEntityId = transactionId;
-
-  res.status(200).json({ status: "CONFIRMED", points: rechargeCheckout.points, newBalance });
+  // applySumUpCheckoutStatus already wrote the audit row for this credit.
+  res.locals.skipAudit = true;
+  res.status(200).json({ status: "CONFIRMED", points: rechargeCheckout.points, newBalance: resolution.newBalance });
 }));
