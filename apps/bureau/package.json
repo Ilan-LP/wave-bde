@@ -10,6 +10,8 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@wave/api-types": "workspace:*",
+    "@wave/auth-client": "workspace:*",
     "@wave/ui": "workspace:*",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

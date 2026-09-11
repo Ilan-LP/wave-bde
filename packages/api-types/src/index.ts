@@ -27,3 +27,37 @@ export interface ScanResponse {
 export interface ApiErrorResponse {
   error: string;
 }
+
+export interface ProductAdmin extends Product {
+  isActive: boolean;
+}
+
+export interface ProductsAllResponse {
+  products: ProductAdmin[];
+}
+
+export interface CreateProductRequest {
+  name: string;
+  pricePoints: number;
+}
+
+export interface CreateProductResponse {
+  product: ProductAdmin;
+}
+
+export interface UpdateProductRequest {
+  name?: string;
+  pricePoints?: number;
+}
+
+export interface UpdateProductResponse {
+  product: ProductAdmin;
+}
+
+export interface SetProductActiveRequest {
+  isActive: boolean;
+}
+
+export interface SetProductActiveResponse {
+  product: ProductAdmin;
+}

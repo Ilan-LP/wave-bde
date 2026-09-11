@@ -90,6 +90,12 @@ importers:
 
   apps/bureau:
     dependencies:
+      '@wave/api-types':
+        specifier: workspace:*
+        version: link:../../packages/api-types
+      '@wave/auth-client':
+        specifier: workspace:*
+        version: link:../../packages/auth-client
       '@wave/ui':
         specifier: workspace:*
         version: link:../../packages/ui
