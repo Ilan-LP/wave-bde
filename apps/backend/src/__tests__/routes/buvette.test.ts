@@ -48,10 +48,11 @@ const product = {
 };
 
 function mockSuccessfulTransaction(overrides?: { balanceAfter?: number }) {
+  const updateManyMock = vi.fn().mockResolvedValue({ count: 1 });
   transactionMock.mockImplementation(async (cb) => {
     const tx = {
       pointsAccount: {
-        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        updateMany: updateManyMock,
         findUnique: vi.fn().mockResolvedValue({ balance: overrides?.balanceAfter ?? 900 }),
       },
       transaction: {
@@ -61,6 +62,7 @@ function mockSuccessfulTransaction(overrides?: { balanceAfter?: number }) {
     } as any;
     return cb(tx);
   });
+  return { updateManyMock };
 }
 
 describe("POST /buvette/scan", () => {
@@ -209,9 +211,10 @@ describe("POST /buvette/scan", () => {
     pointsAccountFindUnique.mockResolvedValue(pointsAccount as any);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     productFindUnique.mockResolvedValue(product as any);
+    const updateManyMock = vi.fn().mockResolvedValue({ count: 0 });
     transactionMock.mockImplementation(async (cb) => {
       const tx = {
-        pointsAccount: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        pointsAccount: { updateMany: updateManyMock },
         transaction: { create: vi.fn() },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any;
@@ -224,6 +227,10 @@ describe("POST /buvette/scan", () => {
       .send({ qrPayload: "wave:v1:valid-token", productId: "product-1" });
 
     expect(res.status).toBe(402);
+    // The rotation is folded into this same conditional updateMany, so
+    // proving it's only ever called once here proves there's no separate
+    // rotation write happening after (or despite) the failed deduction.
+    expect(updateManyMock).toHaveBeenCalledTimes(1);
   });
 
   it("returns 402 (no partial deduction) when a concurrent scan wins the balance race", async () => {
@@ -275,6 +282,29 @@ describe("POST /buvette/scan", () => {
       newBalance: 900,
       customerUserId: "customer-user-1",
     });
+  });
+
+  it("rotates the QR token atomically with the balance deduction on a successful scan", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    pointsAccountFindUnique.mockResolvedValue(pointsAccount as any);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    productFindUnique.mockResolvedValue(product as any);
+    const { updateManyMock } = mockSuccessfulTransaction({ balanceAfter: 900 });
+
+    const res = await supertest(makeApp())
+      .post("/buvette/scan")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ qrPayload: "wave:v1:valid-token", productId: "product-1" });
+
+    expect(res.status).toBe(201);
+    expect(updateManyMock).toHaveBeenCalledTimes(1);
+    const [[call]] = updateManyMock.mock.calls;
+    expect(call.data.balance).toEqual({ decrement: 100 });
+    expect(typeof call.data.qrToken).toBe("string");
+    expect(call.data.qrToken).toMatch(/^wave:v1:/);
+    expect(call.data.qrToken).not.toBe(pointsAccount.qrToken);
+    expect(call.data.qrTokenExpiresAt).toBeInstanceOf(Date);
+    expect(call.data.qrTokenExpiresAt.getTime()).toBeGreaterThan(Date.now());
   });
 
   it("deducts a custom amount and returns null product/quantity on success", async () => {

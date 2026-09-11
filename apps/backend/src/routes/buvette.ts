@@ -3,6 +3,7 @@ import { Router, type Router as ExpressRouter } from "express";
 import { prisma } from "../lib/prisma.js";
 import { authenticate, requireRole } from "../middleware/index.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
+import { generateQrPayload, QR_TOKEN_TTL_MS } from "../lib/qrToken.js";
 
 export const buvetteRouter: ExpressRouter = Router();
 
@@ -107,9 +108,20 @@ buvetteRouter.post(
 
     await prisma
       .$transaction(async (tx) => {
+        // Rotated in the same conditional write as the balance decrement, so
+        // a successful scan invalidates the just-used QR value atomically —
+        // if the where clause doesn't match (insufficient balance), nothing
+        // is written at all, so a failed scan never rotates the token.
+        const newQrToken = generateQrPayload();
+        const newQrTokenExpiresAt = new Date(Date.now() + QR_TOKEN_TTL_MS);
+
         const deducted = await tx.pointsAccount.updateMany({
           where: { id: pointsAccount.id, balance: { gte: totalPrice } },
-          data: { balance: { decrement: totalPrice } },
+          data: {
+            balance: { decrement: totalPrice },
+            qrToken: newQrToken,
+            qrTokenExpiresAt: newQrTokenExpiresAt,
+          },
         });
         if (deducted.count === 0) {
           insufficientBalance = true;
