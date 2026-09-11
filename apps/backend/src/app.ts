@@ -97,6 +97,17 @@ export function createApp(): Express {
     message: { error: "duplicate scan, please rescan" },
   });
 
+  // Throttles self-service recharge attempts (create + confirm), per-IP
+  // like the buvette limiters above — a live SumUp call sits behind both
+  // routes, so a runaway client shouldn't be free to hammer it.
+  const rechargeRateLimit = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "too many requests, try again shortly" },
+  });
+
   app.use(helmet());
   // No credentials/cookies needed — auth is Bearer-token only.
   app.use(cors({ origin: env.corsOrigins }));
@@ -110,6 +121,8 @@ export function createApp(): Express {
   app.use("/auth/login", loginRateLimit);
   app.use(["/auth/refresh", "/auth/logout"], refreshLogoutRateLimit);
   app.use("/auth", authRouter);
+  // Prefix match: also covers /me/recharge/:id/confirm.
+  app.use("/me/recharge", rechargeRateLimit);
   app.use("/me", meRouter);
   app.use("/products", productsRouter);
   app.use("/buvette/scan", buvetteScanRateLimit, buvetteQrReplayRateLimit);

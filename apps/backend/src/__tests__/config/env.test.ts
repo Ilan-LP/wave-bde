@@ -4,6 +4,9 @@ const ORIGINAL_JWT_SECRET = process.env.JWT_SECRET;
 const ORIGINAL_JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
 const ORIGINAL_GOOGLE_SERVICE_ACCOUNT_JSON = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
 const ORIGINAL_GOOGLE_DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
+const ORIGINAL_SUMUP_CLIENT_ID = process.env.SUMUP_CLIENT_ID;
+const ORIGINAL_SUMUP_CLIENT_SECRET = process.env.SUMUP_CLIENT_SECRET;
+const ORIGINAL_SUMUP_MERCHANT_CODE = process.env.SUMUP_MERCHANT_CODE;
 
 describe("config/env", () => {
   beforeEach(() => {
@@ -15,6 +18,9 @@ describe("config/env", () => {
     process.env.JWT_REFRESH_SECRET = ORIGINAL_JWT_REFRESH_SECRET;
     process.env.GOOGLE_SERVICE_ACCOUNT_JSON = ORIGINAL_GOOGLE_SERVICE_ACCOUNT_JSON;
     process.env.GOOGLE_DRIVE_FOLDER_ID = ORIGINAL_GOOGLE_DRIVE_FOLDER_ID;
+    process.env.SUMUP_CLIENT_ID = ORIGINAL_SUMUP_CLIENT_ID;
+    process.env.SUMUP_CLIENT_SECRET = ORIGINAL_SUMUP_CLIENT_SECRET;
+    process.env.SUMUP_MERCHANT_CODE = ORIGINAL_SUMUP_MERCHANT_CODE;
   });
 
   it("throws when JWT_SECRET is missing", async () => {
@@ -63,5 +69,20 @@ describe("config/env", () => {
     expect(env.googleServiceAccount).toBeUndefined();
     expect(env.googleDriveFolderId).toBeUndefined();
     expect(env.isGoogleDriveConfigured).toBe(false);
+  });
+
+  it("boots with SUMUP_CLIENT_ID/SUMUP_CLIENT_SECRET/SUMUP_MERCHANT_CODE unset, marking recharge unconfigured", async () => {
+    process.env.JWT_SECRET = "an-access-secret-32-chars-min-xxx";
+    process.env.JWT_REFRESH_SECRET = "a-refresh-secret-32-chars-min-xx";
+    delete process.env.SUMUP_CLIENT_ID;
+    delete process.env.SUMUP_CLIENT_SECRET;
+    delete process.env.SUMUP_MERCHANT_CODE;
+
+    const { env } = await import("../../config/env.js");
+
+    expect(env.sumupClientId).toBeUndefined();
+    expect(env.sumupClientSecret).toBeUndefined();
+    expect(env.sumupMerchantCode).toBeUndefined();
+    expect(env.isSumUpConfigured).toBe(false);
   });
 });

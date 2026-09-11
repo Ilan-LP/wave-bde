@@ -6,3 +6,6 @@ process.env.GOOGLE_SERVICE_ACCOUNT_JSON = JSON.stringify({
   private_key: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----\n",
 });
 process.env.GOOGLE_DRIVE_FOLDER_ID = "test-drive-folder-id";
+process.env.SUMUP_CLIENT_ID = "test-sumup-client-id";
+process.env.SUMUP_CLIENT_SECRET = "test-sumup-client-secret";
+process.env.SUMUP_MERCHANT_CODE = "test-sumup-merchant-code";

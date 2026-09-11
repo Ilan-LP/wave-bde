@@ -21,6 +21,10 @@ function optionalJsonEnv(name: string): Record<string, unknown> | undefined {
 const googleServiceAccount = optionalJsonEnv("GOOGLE_SERVICE_ACCOUNT_JSON");
 const googleDriveFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID || undefined;
 
+const sumupClientId = process.env.SUMUP_CLIENT_ID || undefined;
+const sumupClientSecret = process.env.SUMUP_CLIENT_SECRET || undefined;
+const sumupMerchantCode = process.env.SUMUP_MERCHANT_CODE || undefined;
+
 export const env = {
   jwtSecret: requireEnv("JWT_SECRET"),
   jwtRefreshSecret: requireEnv("JWT_REFRESH_SECRET"),
@@ -35,6 +39,14 @@ export const env = {
   googleServiceAccount,
   googleDriveFolderId,
   isGoogleDriveConfigured: Boolean(googleServiceAccount && googleDriveFolderId),
+  // Optional, same reasoning as the Google Drive vars above: no real SumUp
+  // account exists yet, so the backend must boot without these. POST
+  // /me/recharge (src/routes/me.ts) 503s instead of failing at startup when
+  // unconfigured — see src/lib/sumup.ts.
+  sumupClientId,
+  sumupClientSecret,
+  sumupMerchantCode,
+  isSumUpConfigured: Boolean(sumupClientId && sumupClientSecret && sumupMerchantCode),
 };
 
 if (env.jwtSecret === env.jwtRefreshSecret) {

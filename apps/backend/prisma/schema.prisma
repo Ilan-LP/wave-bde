@@ -179,7 +179,8 @@ model PointsAccount {
   qrToken          String?   @unique
   qrTokenExpiresAt DateTime?
 
-  transactions Transaction[]
+  transactions      Transaction[]
+  rechargeCheckouts RechargeCheckout[]
 }
 
 model Transaction {
@@ -206,6 +207,33 @@ enum TransactionType {
   EVENT_REWARD
   ADJUSTMENT
   REFUND
+}
+
+/// A SumUp hosted checkout created for a self-service points recharge
+/// (POST /me/recharge). Tracks state server-side so confirmation
+/// (POST /me/recharge/:id/confirm) is race-safe and idempotent: points are
+/// only ever credited once, via the same conditional-updateMany pattern
+/// used by the buvette scan endpoint, gated on status still being PENDING.
+model RechargeCheckout {
+  id              String                 @id @default(cuid())
+  pointsAccountId String
+  pointsAccount   PointsAccount          @relation(fields: [pointsAccountId], references: [id], onDelete: Cascade)
+  sumupCheckoutId String                 @unique
+  points          Int
+  amountMinorUnit Int
+  currency        String
+  status          RechargeCheckoutStatus @default(PENDING)
+  createdAt       DateTime               @default(now())
+  confirmedAt     DateTime?
+
+  @@index([pointsAccountId, createdAt])
+}
+
+enum RechargeCheckoutStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+  EXPIRED
 }
 
 // ---------------------------------------------------------------------------
