@@ -9,6 +9,11 @@ import { PaymentModeSelector } from "../components/PaymentModeSelector";
 import { ScanPaymentFlow } from "../components/ScanPaymentFlow";
 import { saleTotal, type PaymentMode, type Sale } from "../types";
 
+// Mirrors the backend's MAX_QUANTITY (apps/backend/src/routes/buvette.ts) —
+// the backend re-validates regardless, this just avoids the operator
+// stepping past a value the scan would reject anyway.
+const MAX_QUANTITY = 100;
+
 interface TillScreenProps {
   auth: UseAuthResult;
 }
@@ -39,7 +44,9 @@ export function TillScreen({ auth }: TillScreenProps) {
 
   function updateQuantity(delta: number) {
     setSale((current) =>
-      current?.kind === "product" ? { ...current, quantity: Math.max(1, current.quantity + delta) } : current,
+      current?.kind === "product"
+        ? { ...current, quantity: Math.min(MAX_QUANTITY, Math.max(1, current.quantity + delta)) }
+        : current,
     );
   }
 

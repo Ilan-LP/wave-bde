@@ -14,6 +14,8 @@ interface ScanPaymentFlowProps {
 function mapScanError(err: unknown): string {
   if (err instanceof ScanError) {
     switch (err.status) {
+      case 400:
+        return "Invalid sale — please change the item and try again.";
       case 401:
         return "Invalid or expired QR code — ask the customer to reopen it.";
       case 402:
