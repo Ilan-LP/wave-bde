@@ -19,6 +19,9 @@ vi.mock("../../lib/prisma.js", () => ({
       create: vi.fn(),
       update: vi.fn(),
     },
+    auditLog: {
+      create: vi.fn(),
+    },
     $transaction: vi.fn(),
   },
 }));
@@ -54,6 +57,7 @@ const cardCheckoutFindFirst = vi.mocked(prisma.buvetteCardCheckout.findFirst);
 const cardCheckoutFindUnique = vi.mocked(prisma.buvetteCardCheckout.findUnique);
 const cardCheckoutCreate = vi.mocked(prisma.buvetteCardCheckout.create);
 const cardCheckoutUpdate = vi.mocked(prisma.buvetteCardCheckout.update);
+const auditLogCreate = vi.mocked(prisma.auditLog.create);
 const listReadersMock = vi.mocked(listReaders);
 const pairReaderMock = vi.mocked(pairReader);
 const createReaderCheckoutMock = vi.mocked(createReaderCheckout);
@@ -796,6 +800,7 @@ describe("POST /buvette/card/checkout/:id/cancel", () => {
     cardCheckoutFindUnique.mockResolvedValue(cardCheckout as any);
     terminateReaderCheckoutMock.mockResolvedValue(undefined);
     cardCheckoutUpdate.mockResolvedValue({} as never);
+    auditLogCreate.mockResolvedValue({} as never);
 
     const res = await supertest(makeApp())
       .post("/buvette/card/checkout/card-1/cancel")
@@ -810,11 +815,35 @@ describe("POST /buvette/card/checkout/:id/cancel", () => {
     });
   });
 
+  it("writes an explicit CANCEL_REQUESTED audit log entry on the cancel-request success path", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    cardCheckoutFindUnique.mockResolvedValue(cardCheckout as any);
+    terminateReaderCheckoutMock.mockResolvedValue(undefined);
+    cardCheckoutUpdate.mockResolvedValue({} as never);
+    auditLogCreate.mockResolvedValue({} as never);
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout/card-1/cancel")
+      .set("Authorization", `Bearer ${makeToken()}`);
+
+    expect(res.status).toBe(202);
+    expect(auditLogCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: "CANCEL_REQUESTED",
+          entityType: "BuvetteCardCheckout",
+          entityId: "card-1",
+        }),
+      }),
+    );
+  });
+
   it("still stamps cancelRequestedAt even when the terminate call itself fails (best-effort)", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     cardCheckoutFindUnique.mockResolvedValue(cardCheckout as any);
     terminateReaderCheckoutMock.mockRejectedValue(new Error("device offline"));
     cardCheckoutUpdate.mockResolvedValue({} as never);
+    auditLogCreate.mockResolvedValue({} as never);
 
     const res = await supertest(makeApp())
       .post("/buvette/card/checkout/card-1/cancel")

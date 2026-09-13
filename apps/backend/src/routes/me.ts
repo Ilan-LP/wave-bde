@@ -148,6 +148,8 @@ meRouter.post("/recharge/:id/confirm", authenticate, asyncHandler(async (req, re
   }
 
   if (rechargeCheckout.status === "CONFIRMED") {
+    // Pure replay of an already-resolved row — no state change on this call.
+    res.locals.skipAudit = true;
     res.status(200).json({
       status: "CONFIRMED",
       points: rechargeCheckout.points,
@@ -178,6 +180,8 @@ meRouter.post("/recharge/:id/confirm", authenticate, asyncHandler(async (req, re
   });
 
   if (resolution.outcome === "still-pending") {
+    // No-op poll — nothing changed on this call.
+    res.locals.skipAudit = true;
     res.status(202).json({ status: "PENDING" });
     return;
   }
@@ -190,6 +194,9 @@ meRouter.post("/recharge/:id/confirm", authenticate, asyncHandler(async (req, re
   }
 
   if (resolution.outcome === "already-confirmed") {
+    // Lost the race to a concurrent confirm/reconciliation call — the winner
+    // already wrote the audit row for the actual transition.
+    res.locals.skipAudit = true;
     res.status(200).json({ status: "CONFIRMED", points: rechargeCheckout.points, newBalance: resolution.newBalance });
     return;
   }

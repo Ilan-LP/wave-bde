@@ -16,6 +16,7 @@ import {
   type SumUpTransactionStatus,
 } from "../lib/sumup.js";
 import { applyCardCheckoutStatus } from "../lib/buvetteCard.js";
+import { writeAuditLog } from "../middleware/audit.js";
 
 export const buvetteRouter: ExpressRouter = Router();
 
@@ -429,6 +430,8 @@ buvetteRouter.post(
     }
 
     if (cardCheckout.status !== "PENDING") {
+      // Pure replay of an already-resolved row — no state change on this call.
+      res.locals.skipAudit = true;
       res.status(200).json({ status: cardCheckout.status, checkoutId: cardCheckout.id });
       return;
     }
@@ -470,6 +473,8 @@ buvetteRouter.post(
     });
 
     if (resolution.outcome === "still-pending") {
+      // No-op poll — nothing changed on this call.
+      res.locals.skipAudit = true;
       res.status(202).json({ status: "PENDING", checkoutId: cardCheckout.id });
       return;
     }
@@ -512,8 +517,22 @@ buvetteRouter.post(
       data: { cancelRequestedAt: new Date() },
     });
 
-    // Nothing resolved yet — the eventual poll-driven resolution above is
-    // what gets audited, not this best-effort termination request.
+    // The cancellation *request* itself is a real, audit-worthy action (the
+    // cashier asked SumUp to stop the sale), even though the checkout's own
+    // status isn't resolved yet — that eventual resolution is audited
+    // separately by applyCardCheckoutStatus. Logged explicitly, same pattern
+    // as applyCardCheckoutStatus/applySumUpCheckoutStatus, since the generic
+    // middleware would otherwise mislabel this CREATE (it's a POST) rather
+    // than the cancel-request it actually is.
+    writeAuditLog({
+      actorId: req.auth!.sub,
+      action: "CANCEL_REQUESTED",
+      entityType: "BuvetteCardCheckout",
+      entityId: cardCheckout.id,
+      ipAddress: req.ip ?? null,
+      metadata: { source: "cancel-endpoint", readerId: cardCheckout.readerId },
+    });
+
     res.locals.skipAudit = true;
     res.status(202).json({ status: "PENDING", checkoutId: cardCheckout.id, cancelRequested: true });
   }),
