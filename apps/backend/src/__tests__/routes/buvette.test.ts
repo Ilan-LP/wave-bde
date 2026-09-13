@@ -259,7 +259,12 @@ describe("POST /buvette/scan", () => {
     const updateManyMock = vi.fn().mockResolvedValue({ count: 0 });
     transactionMock.mockImplementation(async (cb) => {
       const tx = {
-        pointsAccount: { updateMany: updateManyMock },
+        pointsAccount: {
+          updateMany: updateManyMock,
+          // qrToken unchanged from the presented payload -> the 0-row result
+          // must be attributed to balance, not a consumed QR.
+          findUnique: vi.fn().mockResolvedValue({ ...pointsAccount }),
+        },
         transaction: { create: vi.fn() },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any;
@@ -272,6 +277,7 @@ describe("POST /buvette/scan", () => {
       .send({ qrPayload: "wave:v1:valid-token", productId: "product-1" });
 
     expect(res.status).toBe(402);
+    expect(res.body.error).toBe("insufficient balance");
     // The rotation is folded into this same conditional updateMany, so
     // proving it's only ever called once here proves there's no separate
     // rotation write happening after (or despite) the failed deduction.
@@ -290,7 +296,10 @@ describe("POST /buvette/scan", () => {
     const createSpy = vi.fn();
     transactionMock.mockImplementation(async (cb) => {
       const tx = {
-        pointsAccount: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        pointsAccount: {
+          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+          findUnique: vi.fn().mockResolvedValue({ ...pointsAccount }),
+        },
         transaction: { create: createSpy },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any;
@@ -303,6 +312,40 @@ describe("POST /buvette/scan", () => {
       .send({ qrPayload: "wave:v1:valid-token", productId: "product-1" });
 
     expect(res.status).toBe(402);
+    expect(createSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 (invalid/expired qr code) when a concurrent scan already consumed this exact QR value", async () => {
+    // The where clause ANDs balance and qrToken, so a 0-row result can also
+    // mean a concurrent scan rotated the token away first, not that the
+    // balance was too low. The re-read inside the transaction sees a
+    // different (already-rotated) qrToken, which must map to the same
+    // "invalid or expired" response as a genuinely stale token, never to
+    // "insufficient balance".
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    pointsAccountFindUnique.mockResolvedValue(pointsAccount as any);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    productFindUnique.mockResolvedValue(product as any);
+    const createSpy = vi.fn();
+    transactionMock.mockImplementation(async (cb) => {
+      const tx = {
+        pointsAccount: {
+          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+          findUnique: vi.fn().mockResolvedValue({ ...pointsAccount, qrToken: "wave:v1:already-rotated" }),
+        },
+        transaction: { create: createSpy },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any;
+      return cb(tx);
+    });
+
+    const res = await supertest(makeApp())
+      .post("/buvette/scan")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ qrPayload: "wave:v1:valid-token", productId: "product-1" });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toMatch(/invalid or expired/);
     expect(createSpy).not.toHaveBeenCalled();
   });
 

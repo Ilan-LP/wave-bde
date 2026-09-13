@@ -20,7 +20,7 @@ import { writeAuditLog } from "../middleware/audit.js";
 
 export const buvetteRouter: ExpressRouter = Router();
 
-const INSUFFICIENT_BALANCE_ROLLBACK = "INSUFFICIENT_BALANCE_ROLLBACK";
+const CONDITIONAL_UPDATE_ROLLBACK = "CONDITIONAL_UPDATE_ROLLBACK";
 
 // Sanity ceilings, not business-mandated limits — guard against an Int4
 // overflow in totalPrice (pricePoints * quantity) once written to
@@ -116,6 +116,7 @@ buvetteRouter.post(
     }
 
     let insufficientBalance = false;
+    let qrAlreadyConsumed = false;
     let transactionId: string | undefined;
     let newBalance: number | undefined;
 
@@ -123,13 +124,19 @@ buvetteRouter.post(
       .$transaction(async (tx) => {
         // Rotated in the same conditional write as the balance decrement, so
         // a successful scan invalidates the just-used QR value atomically —
-        // if the where clause doesn't match (insufficient balance), nothing
-        // is written at all, so a failed scan never rotates the token.
+        // if the where clause doesn't match, nothing is written at all, so a
+        // failed scan never rotates the token.
         const newQrToken = generateQrPayload();
         const newQrTokenExpiresAt = new Date(Date.now() + QR_TOKEN_TTL_MS);
 
+        // qrToken is part of the where clause (not just the initial
+        // findUnique above) so the single-use guarantee is enforced by this
+        // conditional write itself, not only by the HTTP-layer replay rate
+        // limiter — a concurrent scan that rotates this exact token between
+        // our read and this write loses the race here instead of both scans
+        // succeeding.
         const deducted = await tx.pointsAccount.updateMany({
-          where: { id: pointsAccount.id, balance: { gte: totalPrice } },
+          where: { id: pointsAccount.id, balance: { gte: totalPrice }, qrToken: qrPayload },
           data: {
             balance: { decrement: totalPrice },
             qrToken: newQrToken,
@@ -137,8 +144,18 @@ buvetteRouter.post(
           },
         });
         if (deducted.count === 0) {
-          insufficientBalance = true;
-          throw new Error(INSUFFICIENT_BALANCE_ROLLBACK);
+          // Two independent conditions are ANDed in the where clause above,
+          // so a 0-row result no longer means "balance too low" on its own —
+          // it can also mean a concurrent scan already rotated this exact
+          // qrToken away first. Re-read to tell the two apart so the
+          // response below isn't misleading.
+          const current = await tx.pointsAccount.findUnique({ where: { id: pointsAccount.id } });
+          if (current?.qrToken !== qrPayload) {
+            qrAlreadyConsumed = true;
+          } else {
+            insufficientBalance = true;
+          }
+          throw new Error(CONDITIONAL_UPDATE_ROLLBACK);
         }
 
         // Hash, not the raw token: the QR doesn't rotate on use, so it stays
@@ -175,10 +192,20 @@ buvetteRouter.post(
         newBalance = account?.balance;
       })
       .catch((err: unknown) => {
-        if (!insufficientBalance) {
+        if (!insufficientBalance && !qrAlreadyConsumed) {
           throw err;
         }
       });
+
+    if (qrAlreadyConsumed) {
+      // Same status/message as the initial QR validation above — from the
+      // caller's perspective this token is no longer valid, and collapsing
+      // "already used by a concurrent scan" into the same generic response
+      // keeps the existing anti-enumeration convention rather than revealing
+      // that a race occurred.
+      res.status(401).json({ error: "invalid or expired qr code" });
+      return;
+    }
 
     if (insufficientBalance) {
       res.status(402).json({ error: "insufficient balance" });
