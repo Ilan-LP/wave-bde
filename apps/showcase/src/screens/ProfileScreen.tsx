@@ -15,6 +15,10 @@ const MAX_RECHARGE_POINTS = 3000;
 // the server.
 const POINTS_PER_EUR = 15;
 const POLL_INTERVAL_MS = 3000;
+// Refetch the QR this long before its returned expiresAt, so a member
+// looking at an already-loaded tab always gets a fresh code well before the
+// old one stops scanning at the till (see qrToken.ts's QR_TOKEN_TTL_MS).
+const QR_REFRESH_LEAD_MS = 30_000;
 
 interface ProfileScreenProps {
   auth: UseAuthResult;
@@ -31,6 +35,9 @@ export function ProfileScreen({ auth }: ProfileScreenProps) {
 
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [qrError, setQrError] = useState<string | null>(null);
+  const [isRefreshingQr, setIsRefreshingQr] = useState(false);
+  const reloadQrRef = useRef<() => void>(() => {});
+  const qrRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [amountInput, setAmountInput] = useState("");
   const [isStartingRecharge, setIsStartingRecharge] = useState(false);
@@ -50,11 +57,62 @@ export function ProfileScreen({ auth }: ProfileScreenProps) {
 
   useEffect(loadBalance, [loadBalance]);
 
+  // Loads the QR, schedules a refetch shortly before it expires, and
+  // refetches on regaining focus/visibility — a member can sit on this tab
+  // for a while before walking to the till, and the QR also goes stale
+  // early if it's already been scanned once (see backend CLAUDE.md's M1
+  // fix: a successful buvette scan rotates the token immediately, not just
+  // on TTL). Deliberately not handled: detecting that out-of-band
+  // invalidation in real time — this only refreshes on a timer/focus, not a
+  // push/poll for "has this exact QR already been used."
   useEffect(() => {
-    fetchQrCode()
-      .then(({ qrPayload }) => QRCode.toDataURL(qrPayload, { width: 320, margin: 2 }))
-      .then(setQrDataUrl)
-      .catch(() => setQrError("Failed to load QR code."));
+    let cancelled = false;
+
+    function scheduleRefresh(expiresAt: string) {
+      if (qrRefreshTimer.current) {
+        clearTimeout(qrRefreshTimer.current);
+      }
+      const delay = Math.max(0, new Date(expiresAt).getTime() - Date.now() - QR_REFRESH_LEAD_MS);
+      qrRefreshTimer.current = setTimeout(load, delay);
+    }
+
+    function load() {
+      setIsRefreshingQr(true);
+      fetchQrCode()
+        .then(({ qrPayload, expiresAt }) =>
+          QRCode.toDataURL(qrPayload, { width: 320, margin: 2 }).then((dataUrl) => {
+            if (cancelled) return;
+            setQrDataUrl(dataUrl);
+            setQrError(null);
+            scheduleRefresh(expiresAt);
+          }),
+        )
+        .catch(() => {
+          // Keep whatever QR is already on screen — a blank/loading flash
+          // here is worse than a stale image, and the message below makes
+          // the staleness visible instead of silent.
+          if (!cancelled) setQrError("QR may be outdated — tap to retry.");
+        })
+        .finally(() => {
+          if (!cancelled) setIsRefreshingQr(false);
+        });
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") load();
+    }
+
+    reloadQrRef.current = load;
+    load();
+    window.addEventListener("focus", load);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      if (qrRefreshTimer.current) clearTimeout(qrRefreshTimer.current);
+      window.removeEventListener("focus", load);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, []);
 
   const stopPolling = useCallback(() => {
@@ -154,8 +212,22 @@ export function ProfileScreen({ auth }: ProfileScreenProps) {
 
       <section className="space-y-3 rounded-lg border border-gray-200 p-4 text-center">
         <p className="text-sm font-medium text-gray-500">Your QR code</p>
-        {qrError && <Banner variant="error">{qrError}</Banner>}
-        {qrDataUrl && <img src={qrDataUrl} alt="Your Wave QR code" className="mx-auto h-72 w-72" />}
+        {qrDataUrl && (
+          <div className="space-y-1">
+            <img src={qrDataUrl} alt="Your Wave QR code" className="mx-auto h-72 w-72" />
+            {isRefreshingQr && <p className="text-xs text-gray-400">Refreshing…</p>}
+          </div>
+        )}
+        {qrError && (
+          <button
+            type="button"
+            onClick={() => reloadQrRef.current()}
+            className="text-sm font-semibold text-red-600 underline"
+          >
+            {qrError}
+          </button>
+        )}
+        {!qrDataUrl && !qrError && <p className="text-sm text-gray-400">Loading…</p>}
       </section>
 
       <section className="space-y-3 rounded-lg border border-gray-200 p-4">
