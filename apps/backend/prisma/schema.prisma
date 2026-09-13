@@ -245,6 +245,14 @@ enum RechargeCheckoutStatus {
 /// reader-checkout lifecycle (PENDING -> SUCCESSFUL/FAILED/CANCELLED)
 /// race-safely and to anchor the audit log, the same way RechargeCheckout
 /// tracks the self-service recharge lifecycle.
+///
+/// DB-only constraint not representable here: a partial unique index on
+/// (readerId) WHERE status = 'PENDING' (migration
+/// 20260913160000_add_buvette_card_checkout_pending_unique) enforces at most
+/// one PENDING row per readerId — Prisma has no filtered/partial unique
+/// index syntax, so this exists only in the raw migration SQL, not as an
+/// @@unique here. POST /buvette/card/checkout catches the resulting P2002 and
+/// returns 409; see src/routes/buvette.ts.
 model BuvetteCardCheckout {
   id                   String                    @id @default(cuid())
   // SumUp reader id the checkout was started on (not a local FK — paired

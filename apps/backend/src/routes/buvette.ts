@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { Router, type Router as ExpressRouter } from "express";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { authenticate, requireRole } from "../middleware/index.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
@@ -411,18 +412,33 @@ buvetteRouter.post(
       return;
     }
 
-    const cardCheckout = await prisma.buvetteCardCheckout.create({
-      data: {
-        readerId,
-        clientTransactionId: checkout.clientTransactionId,
-        amountPoints: totalPrice,
-        amountMinorUnit,
-        currency: SUMUP_CURRENCY,
-        metadata: product
-          ? { productId: product.id, productName: product.name, quantity, unitPricePoints: product.pricePoints }
-          : { customAmount: true, amountPoints: totalPrice },
-      },
-    });
+    let cardCheckout;
+    try {
+      cardCheckout = await prisma.buvetteCardCheckout.create({
+        data: {
+          readerId,
+          clientTransactionId: checkout.clientTransactionId,
+          amountPoints: totalPrice,
+          amountMinorUnit,
+          currency: SUMUP_CURRENCY,
+          metadata: product
+            ? { productId: product.id, productName: product.name, quantity, unitPricePoints: product.pricePoints }
+            : { customAmount: true, amountPoints: totalPrice },
+        },
+      });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+        // Lost the race against the findFirst pre-check above: the DB-level
+        // partial unique index (readerId WHERE status = 'PENDING', see
+        // schema.prisma's BuvetteCardCheckout doc comment) is the real
+        // guarantee here, since that pre-check and this create are not
+        // atomic together. Same message as the pre-check's own 409 so a
+        // caller can't tell which layer caught it.
+        res.status(409).json({ error: "this reader already has a checkout in progress" });
+        return;
+      }
+      throw err;
+    }
 
     res.locals.auditEntityType = "BuvetteCardCheckout";
     res.locals.auditEntityId = cardCheckout.id;

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import express from "express";
 import supertest from "supertest";
+import { Prisma } from "@prisma/client";
 import { buvetteRouter } from "../../routes/buvette.js";
 import { prisma } from "../../lib/prisma.js";
 import { signAccessToken } from "../../lib/jwt.js";
@@ -688,6 +689,31 @@ describe("POST /buvette/card/checkout", () => {
     expect(res.status).toBe(201);
     expect(productFindUnique).not.toHaveBeenCalled();
     expect(res.body).toMatchObject({ product: null, quantity: null });
+  });
+
+  it("returns 409 when the DB-level partial unique index rejects a concurrent PENDING checkout on the same reader", async () => {
+    // The findFirst pre-check passed (no PENDING row seen), but the create
+    // still races another request that inserted first — the DB constraint
+    // (see schema.prisma's BuvetteCardCheckout doc comment) is what actually
+    // catches this, surfaced here as a Prisma P2002 on the create call.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    productFindUnique.mockResolvedValue(product as any);
+    cardCheckoutFindFirst.mockResolvedValue(null);
+    createReaderCheckoutMock.mockResolvedValue({ clientTransactionId: "ctx-1" });
+    cardCheckoutCreate.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+        code: "P2002",
+        clientVersion: "test",
+      }),
+    );
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ readerId: "rdr_1", productId: "product-1" });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: "this reader already has a checkout in progress" });
   });
 });
 
