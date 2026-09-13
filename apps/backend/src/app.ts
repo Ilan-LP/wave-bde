@@ -119,6 +119,18 @@ export function createApp(): Express {
     message: { error: "too many requests, try again shortly" },
   });
 
+  // Covers reader listing/pairing and the whole card-checkout lifecycle
+  // (create/confirm/cancel), per-IP like the limiters above. Higher than
+  // rechargeRateLimit since the cashier UI polls confirm roughly every 2s
+  // while a card checkout is in flight (~30 calls/min from that alone).
+  const buvetteCardRateLimit = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "too many requests, try again shortly" },
+  });
+
   app.use(helmet());
   // No credentials/cookies needed — auth is Bearer-token only.
   app.use(cors({ origin: env.corsOrigins }));
@@ -138,6 +150,7 @@ export function createApp(): Express {
   app.use("/me", meRouter);
   app.use("/products", productsRouter);
   app.use("/buvette/scan", buvetteScanRateLimit, buvetteQrReplayRateLimit);
+  app.use(["/buvette/card", "/buvette/readers"], buvetteCardRateLimit);
   app.use("/buvette", buvetteRouter);
 
   app.use(errorHandler);

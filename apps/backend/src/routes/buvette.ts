@@ -4,6 +4,18 @@ import { prisma } from "../lib/prisma.js";
 import { authenticate, requireRole } from "../middleware/index.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { generateQrPayload, QR_TOKEN_TTL_MS } from "../lib/qrToken.js";
+import { env } from "../config/env.js";
+import {
+  createReaderCheckout,
+  getTransactionByClientId,
+  listReaders,
+  pairReader,
+  pointsToAmountMinorUnits,
+  SUMUP_CURRENCY,
+  terminateReaderCheckout,
+  type SumUpTransactionStatus,
+} from "../lib/sumup.js";
+import { applyCardCheckoutStatus } from "../lib/buvetteCard.js";
 
 export const buvetteRouter: ExpressRouter = Router();
 
@@ -183,5 +195,318 @@ buvetteRouter.post(
       newBalance,
       customerUserId: pointsAccount.userId,
     });
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Card payment (SumUp Readers API) — see CLAUDE.md's "Buvette Card Payment"
+// section for the full design. Deliberately independent of the points
+// deduction above: a card-present sale never identifies a customer, so none
+// of these routes touch PointsAccount or create a Transaction row.
+// ---------------------------------------------------------------------------
+
+// How long after a cancel request we keep trusting "SumUp still shows no
+// transaction for this checkout" as evidence the termination actually
+// worked, rather than as an in-flight payment SumUp just hasn't recorded
+// yet. Short on purpose: terminate only has any effect before the card is
+// presented, so if a transaction was going to appear at all it appears fast.
+const CANCEL_GRACE_MS = 8 * 1000;
+
+// Lists readers already paired with the configured merchant account, for
+// the till's reader picker (apps/buvette/src/components/ReaderPicker.tsx).
+// Any logged-in member, same "any logged-in member" RBAC shape as the rest
+// of the buvette routes — pairing itself (below) is BUREAU-only, but
+// picking among already-paired readers is a normal till operation.
+buvetteRouter.get(
+  "/readers",
+  authenticate,
+  requireRole("RESPONSABLE_POLE", "MEMBRE_POLE"),
+  asyncHandler(async (_req, res) => {
+    if (!env.isSumUpConfigured) {
+      res.status(503).json({ error: "card payment is not available yet" });
+      return;
+    }
+    const readers = await listReaders();
+    res.json({ readers: readers.map((r) => ({ id: r.id, name: r.name, status: r.status })) });
+  }),
+);
+
+// Pairs a new physical reader using the pairing code shown on the device's
+// own screen — a one-time, physical setup action, not a per-sale one.
+// BUREAU-only: this is account/hardware configuration, not till operation,
+// same reasoning as product management being BUREAU-only (see CLAUDE.md
+// "Product Catalog").
+buvetteRouter.post(
+  "/readers/pair",
+  authenticate,
+  requireRole("BUREAU"),
+  asyncHandler(async (req, res) => {
+    if (!env.isSumUpConfigured) {
+      res.status(503).json({ error: "card payment is not available yet" });
+      return;
+    }
+
+    const { pairingCode, name } = req.body as { pairingCode?: unknown; name?: unknown };
+    if (typeof pairingCode !== "string" || !pairingCode) {
+      res.status(400).json({ error: "pairingCode is required" });
+      return;
+    }
+    if (typeof name !== "string" || !name) {
+      res.status(400).json({ error: "name is required" });
+      return;
+    }
+
+    let reader;
+    try {
+      reader = await pairReader({ pairingCode, name });
+    } catch (err) {
+      console.error("[buvette-card] failed to pair reader", err);
+      res.status(502).json({ error: "failed to pair reader" });
+      return;
+    }
+
+    res.locals.auditEntityType = "SumUpReader";
+    res.locals.auditEntityId = reader.id;
+
+    res.status(201).json({ reader });
+  }),
+);
+
+// Starts a card-present checkout on a paired reader for a basket, using the
+// exact same productId/customAmount/quantity validation as POST /scan above
+// (duplicated rather than extracted into a shared helper, to avoid touching
+// that existing, already-tested handler). No QR involved: the caller is the
+// till operator identifying which reader and which basket, not a customer.
+buvetteRouter.post(
+  "/card/checkout",
+  authenticate,
+  requireRole("RESPONSABLE_POLE", "MEMBRE_POLE"),
+  asyncHandler(async (req, res) => {
+    if (!env.isSumUpConfigured) {
+      res.status(503).json({ error: "card payment is not available yet" });
+      return;
+    }
+
+    const {
+      readerId,
+      productId,
+      customAmount: rawCustomAmount,
+      quantity: rawQuantity,
+    } = req.body as {
+      readerId?: unknown;
+      productId?: unknown;
+      customAmount?: unknown;
+      quantity?: unknown;
+    };
+
+    if (typeof readerId !== "string" || !readerId) {
+      res.status(400).json({ error: "readerId is required" });
+      return;
+    }
+
+    const hasProductId = typeof productId === "string" && productId.length > 0;
+    const hasCustomAmount = rawCustomAmount !== undefined;
+
+    if (hasProductId === hasCustomAmount) {
+      res.status(400).json({ error: "exactly one of productId or customAmount is required" });
+      return;
+    }
+
+    if (hasCustomAmount) {
+      if (
+        typeof rawCustomAmount !== "number" ||
+        !Number.isInteger(rawCustomAmount) ||
+        rawCustomAmount < 1 ||
+        rawCustomAmount > MAX_CUSTOM_AMOUNT
+      ) {
+        res.status(400).json({ error: `customAmount must be an integer between 1 and ${MAX_CUSTOM_AMOUNT}` });
+        return;
+      }
+      if (rawQuantity !== undefined) {
+        res.status(400).json({ error: "quantity is not allowed with customAmount" });
+        return;
+      }
+    }
+
+    let quantity = 1;
+    if (hasProductId && rawQuantity !== undefined) {
+      if (
+        typeof rawQuantity !== "number" ||
+        !Number.isInteger(rawQuantity) ||
+        rawQuantity < 1 ||
+        rawQuantity > MAX_QUANTITY
+      ) {
+        res.status(400).json({ error: `quantity must be an integer between 1 and ${MAX_QUANTITY}` });
+        return;
+      }
+      quantity = rawQuantity;
+    }
+
+    let product: { id: string; name: string; pricePoints: number; isActive: boolean } | null = null;
+    let totalPrice: number;
+
+    if (hasProductId) {
+      product = await prisma.product.findUnique({ where: { id: productId as string } });
+      if (!product) {
+        res.status(404).json({ error: "product not found" });
+        return;
+      }
+      if (!product.isActive) {
+        res.status(409).json({ error: "product is not active" });
+        return;
+      }
+      totalPrice = product.pricePoints * quantity;
+    } else {
+      totalPrice = rawCustomAmount as number;
+    }
+
+    // Mirrors the /scan QR replay guard's spirit: refuse to start a second
+    // checkout on a reader that already has one in flight, rather than
+    // relying solely on SumUp's own same-device rejection during its
+    // 60-second window.
+    const existingPending = await prisma.buvetteCardCheckout.findFirst({
+      where: { readerId, status: "PENDING" },
+    });
+    if (existingPending) {
+      res.status(409).json({ error: "this reader already has a checkout in progress" });
+      return;
+    }
+
+    const amountMinorUnit = pointsToAmountMinorUnits(totalPrice);
+
+    let checkout;
+    try {
+      checkout = await createReaderCheckout({ readerId, amountMinorUnit });
+    } catch (err) {
+      console.error("[buvette-card] failed to start reader checkout", err);
+      res.status(502).json({ error: "failed to start card payment" });
+      return;
+    }
+
+    const cardCheckout = await prisma.buvetteCardCheckout.create({
+      data: {
+        readerId,
+        clientTransactionId: checkout.clientTransactionId,
+        amountPoints: totalPrice,
+        amountMinorUnit,
+        currency: SUMUP_CURRENCY,
+        metadata: product
+          ? { productId: product.id, productName: product.name, quantity, unitPricePoints: product.pricePoints }
+          : { customAmount: true, amountPoints: totalPrice },
+      },
+    });
+
+    res.locals.auditEntityType = "BuvetteCardCheckout";
+    res.locals.auditEntityId = cardCheckout.id;
+
+    res.status(201).json({
+      checkoutId: cardCheckout.id,
+      readerId,
+      product: product ? { id: product.id, name: product.name, pricePoints: product.pricePoints } : null,
+      quantity: product ? quantity : null,
+      amountPoints: totalPrice,
+      amount: amountMinorUnit / 100,
+      currency: SUMUP_CURRENCY,
+      status: "PENDING",
+    });
+  }),
+);
+
+// Polled by the cashier UI every ~2s while a card checkout is PENDING — same
+// "safe to call repeatedly" idempotent shape as POST /me/recharge/:id/confirm
+// (see CLAUDE.md "SumUp Integration + Recharge"). Once a checkout leaves
+// PENDING, later calls just replay the stored outcome without a second SumUp
+// call.
+buvetteRouter.post(
+  "/card/checkout/:id/confirm",
+  authenticate,
+  requireRole("RESPONSABLE_POLE", "MEMBRE_POLE"),
+  asyncHandler(async (req, res) => {
+    const cardCheckout = await prisma.buvetteCardCheckout.findUnique({ where: { id: req.params.id } });
+    if (!cardCheckout) {
+      res.status(404).json({ error: "card checkout not found" });
+      return;
+    }
+
+    if (cardCheckout.status !== "PENDING") {
+      res.status(200).json({ status: cardCheckout.status, checkoutId: cardCheckout.id });
+      return;
+    }
+
+    let sumupStatus: SumUpTransactionStatus;
+    try {
+      sumupStatus = await getTransactionByClientId(cardCheckout.clientTransactionId);
+    } catch (err) {
+      console.error("[buvette-card] failed to check SumUp transaction status", err);
+      res.status(502).json({ error: "failed to check payment status" });
+      return;
+    }
+
+    if (
+      sumupStatus === "PENDING" &&
+      cardCheckout.cancelRequestedAt &&
+      Date.now() - cardCheckout.cancelRequestedAt.getTime() > CANCEL_GRACE_MS
+    ) {
+      // Cancel was requested a while ago and SumUp still shows no
+      // transaction for this checkout — trust the termination worked rather
+      // than leaving the till waiting on a payment that was never started.
+      sumupStatus = "CANCELLED";
+    }
+
+    const resolution = await applyCardCheckoutStatus({
+      cardCheckout,
+      sumupStatus,
+      actorId: req.auth!.sub,
+      ipAddress: req.ip ?? null,
+      source: "poll-endpoint",
+    });
+
+    if (resolution.outcome === "still-pending") {
+      res.status(202).json({ status: "PENDING", checkoutId: cardCheckout.id });
+      return;
+    }
+
+    // applyCardCheckoutStatus already wrote the audit row for this transition.
+    res.locals.skipAudit = true;
+    res.status(200).json({ status: resolution.status, checkoutId: cardCheckout.id });
+  }),
+);
+
+// Requests SumUp stop the current transaction on the reader. Deliberately
+// does NOT flip status to CANCELLED itself — see CARD_CHECKOUT_STALE_MS's
+// sibling constant CANCEL_GRACE_MS above and CLAUDE.md's "Buvette Card
+// Payment" section: terminate gives no confirmation it worked, so the
+// checkout is only ever resolved by a later poll observing SumUp's actual
+// transaction outcome, never by this call's own success.
+buvetteRouter.post(
+  "/card/checkout/:id/cancel",
+  authenticate,
+  requireRole("RESPONSABLE_POLE", "MEMBRE_POLE"),
+  asyncHandler(async (req, res) => {
+    const cardCheckout = await prisma.buvetteCardCheckout.findUnique({ where: { id: req.params.id } });
+    if (!cardCheckout) {
+      res.status(404).json({ error: "card checkout not found" });
+      return;
+    }
+    if (cardCheckout.status !== "PENDING") {
+      res.status(200).json({ status: cardCheckout.status, checkoutId: cardCheckout.id });
+      return;
+    }
+
+    try {
+      await terminateReaderCheckout(cardCheckout.readerId);
+    } catch (err) {
+      console.error("[buvette-card] terminate request failed (best-effort)", err);
+    }
+
+    await prisma.buvetteCardCheckout.update({
+      where: { id: cardCheckout.id },
+      data: { cancelRequestedAt: new Date() },
+    });
+
+    // Nothing resolved yet — the eventual poll-driven resolution above is
+    // what gets audited, not this best-effort termination request.
+    res.locals.skipAudit = true;
+    res.status(202).json({ status: "PENDING", checkoutId: cardCheckout.id, cancelRequested: true });
   }),
 );

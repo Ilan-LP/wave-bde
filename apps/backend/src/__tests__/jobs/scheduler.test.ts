@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { runAuditLogExport } from "../../jobs/auditLogExport.js";
 import { runRechargeReconciliation } from "../../jobs/rechargeReconciliation.js";
-import { msUntilNextRun, scheduleDailyAuditExport, scheduleRechargeReconciliation } from "../../jobs/scheduler.js";
+import { runBuvetteCardReconciliation } from "../../jobs/buvetteCardReconciliation.js";
+import {
+  msUntilNextRun,
+  scheduleBuvetteCardReconciliation,
+  scheduleDailyAuditExport,
+  scheduleRechargeReconciliation,
+} from "../../jobs/scheduler.js";
 
 vi.mock("../../jobs/auditLogExport.js", () => ({
   runAuditLogExport: vi.fn(),
@@ -11,8 +17,13 @@ vi.mock("../../jobs/rechargeReconciliation.js", () => ({
   runRechargeReconciliation: vi.fn(),
 }));
 
+vi.mock("../../jobs/buvetteCardReconciliation.js", () => ({
+  runBuvetteCardReconciliation: vi.fn(),
+}));
+
 const runExport = vi.mocked(runAuditLogExport);
 const runReconciliation = vi.mocked(runRechargeReconciliation);
+const runCardReconciliation = vi.mocked(runBuvetteCardReconciliation);
 
 describe("msUntilNextRun", () => {
   it("returns the ms until 03:00 UTC later the same day when called before that time", () => {
@@ -102,6 +113,44 @@ describe("scheduleRechargeReconciliation", () => {
 
     await vi.advanceTimersByTimeAsync(15 * 60 * 1000);
     expect(runReconciliation).toHaveBeenCalledTimes(2);
+
+    consoleError.mockRestore();
+  });
+});
+
+describe("scheduleBuvetteCardReconciliation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-07T01:00:00.000Z"));
+    runCardReconciliation.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("runs every 5 minutes", async () => {
+    scheduleBuvetteCardReconciliation();
+
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+    expect(runCardReconciliation).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+    expect(runCardReconciliation).toHaveBeenCalledTimes(2);
+  });
+
+  it("logs and reschedules instead of throwing when a run fails", async () => {
+    runCardReconciliation.mockRejectedValueOnce(new Error("reconciliation failed"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    scheduleBuvetteCardReconciliation();
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+
+    expect(consoleError).toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+    expect(runCardReconciliation).toHaveBeenCalledTimes(2);
 
     consoleError.mockRestore();
   });

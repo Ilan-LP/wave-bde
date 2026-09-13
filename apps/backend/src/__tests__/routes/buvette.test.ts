@@ -13,13 +13,54 @@ vi.mock("../../lib/prisma.js", () => ({
     product: {
       findUnique: vi.fn(),
     },
+    buvetteCardCheckout: {
+      findFirst: vi.fn(),
+      findUnique: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+    },
     $transaction: vi.fn(),
   },
 }));
 
+vi.mock("../../lib/sumup.js", () => ({
+  listReaders: vi.fn(),
+  pairReader: vi.fn(),
+  createReaderCheckout: vi.fn(),
+  terminateReaderCheckout: vi.fn(),
+  getTransactionByClientId: vi.fn(),
+  pointsToAmountMinorUnits: vi.fn((points: number) => Math.round((points * 100) / 15)),
+  SUMUP_CURRENCY: "EUR",
+}));
+
+vi.mock("../../lib/buvetteCard.js", () => ({
+  applyCardCheckoutStatus: vi.fn(),
+}));
+
+import {
+  listReaders,
+  pairReader,
+  createReaderCheckout,
+  terminateReaderCheckout,
+  getTransactionByClientId,
+  pointsToAmountMinorUnits,
+} from "../../lib/sumup.js";
+import { applyCardCheckoutStatus } from "../../lib/buvetteCard.js";
+
 const pointsAccountFindUnique = vi.mocked(prisma.pointsAccount.findUnique);
 const productFindUnique = vi.mocked(prisma.product.findUnique);
 const transactionMock = vi.mocked(prisma.$transaction);
+const cardCheckoutFindFirst = vi.mocked(prisma.buvetteCardCheckout.findFirst);
+const cardCheckoutFindUnique = vi.mocked(prisma.buvetteCardCheckout.findUnique);
+const cardCheckoutCreate = vi.mocked(prisma.buvetteCardCheckout.create);
+const cardCheckoutUpdate = vi.mocked(prisma.buvetteCardCheckout.update);
+const listReadersMock = vi.mocked(listReaders);
+const pairReaderMock = vi.mocked(pairReader);
+const createReaderCheckoutMock = vi.mocked(createReaderCheckout);
+const terminateReaderCheckoutMock = vi.mocked(terminateReaderCheckout);
+const getTransactionByClientIdMock = vi.mocked(getTransactionByClientId);
+const applyCardCheckoutStatusMock = vi.mocked(applyCardCheckoutStatus);
+const pointsToAmountMinorUnitsMock = vi.mocked(pointsToAmountMinorUnits);
 
 function makeApp() {
   const app = express();
@@ -382,5 +423,402 @@ describe("POST /buvette/scan", () => {
       .send({ qrPayload: "wave:v1:valid-token", productId: "product-1" });
 
     expect(res.status).toBe(500);
+  });
+});
+
+const cardCheckout = {
+  id: "card-1",
+  readerId: "rdr_1",
+  clientTransactionId: "ctx-1",
+  amountPoints: 100,
+  amountMinorUnit: 667,
+  currency: "EUR",
+  status: "PENDING" as const,
+  cancelRequestedAt: null as Date | null,
+  metadata: null,
+  createdAt: new Date(),
+  resolvedAt: null,
+};
+
+describe("GET /buvette/readers", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns 401 without a valid access token", async () => {
+    const res = await supertest(makeApp()).get("/buvette/readers");
+    expect(res.status).toBe(401);
+  });
+
+  it("lists readers for any logged-in member", async () => {
+    listReadersMock.mockResolvedValue([{ id: "rdr_1", name: "Frontdesk", status: "paired", device: { identifier: "U1", model: "solo" } }]);
+
+    const res = await supertest(makeApp())
+      .get("/buvette/readers")
+      .set("Authorization", `Bearer ${makeToken()}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ readers: [{ id: "rdr_1", name: "Frontdesk", status: "paired" }] });
+  });
+});
+
+describe("POST /buvette/readers/pair", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns 401 without a valid access token", async () => {
+    const res = await supertest(makeApp())
+      .post("/buvette/readers/pair")
+      .send({ pairingCode: "4WLFDSBF", name: "Frontdesk" });
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 403 for a non-BUREAU member", async () => {
+    const res = await supertest(makeApp())
+      .post("/buvette/readers/pair")
+      .set("Authorization", `Bearer ${makeToken("MEMBRE_POLE")}`)
+      .send({ pairingCode: "4WLFDSBF", name: "Frontdesk" });
+    expect(res.status).toBe(403);
+    expect(pairReaderMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when pairingCode is missing", async () => {
+    const res = await supertest(makeApp())
+      .post("/buvette/readers/pair")
+      .set("Authorization", `Bearer ${makeToken("BUREAU")}`)
+      .send({ name: "Frontdesk" });
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when name is missing", async () => {
+    const res = await supertest(makeApp())
+      .post("/buvette/readers/pair")
+      .set("Authorization", `Bearer ${makeToken("BUREAU")}`)
+      .send({ pairingCode: "4WLFDSBF" });
+    expect(res.status).toBe(400);
+  });
+
+  it("pairs the reader for a BUREAU member", async () => {
+    pairReaderMock.mockResolvedValue({ id: "rdr_1", name: "Frontdesk", status: "paired", device: { identifier: "U1", model: "solo" } });
+
+    const res = await supertest(makeApp())
+      .post("/buvette/readers/pair")
+      .set("Authorization", `Bearer ${makeToken("BUREAU")}`)
+      .send({ pairingCode: "4WLFDSBF", name: "Frontdesk" });
+
+    expect(res.status).toBe(201);
+    expect(pairReaderMock).toHaveBeenCalledWith({ pairingCode: "4WLFDSBF", name: "Frontdesk" });
+  });
+
+  it("returns 502 when pairing fails", async () => {
+    pairReaderMock.mockRejectedValue(new Error("offline"));
+
+    const res = await supertest(makeApp())
+      .post("/buvette/readers/pair")
+      .set("Authorization", `Bearer ${makeToken("BUREAU")}`)
+      .send({ pairingCode: "4WLFDSBF", name: "Frontdesk" });
+
+    expect(res.status).toBe(502);
+  });
+});
+
+describe("POST /buvette/card/checkout", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    // resetAllMocks() also wipes the vi.mock() factory's inline
+    // implementation above, so it must be re-armed per test.
+    pointsToAmountMinorUnitsMock.mockImplementation((points) => Math.round((points * 100) / 15));
+  });
+
+  it("returns 401 without a valid access token", async () => {
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout")
+      .send({ readerId: "rdr_1", productId: "product-1" });
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 400 when readerId is missing", async () => {
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ productId: "product-1" });
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when neither productId nor customAmount is provided", async () => {
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ readerId: "rdr_1" });
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 404 when the product does not exist", async () => {
+    productFindUnique.mockResolvedValue(null);
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ readerId: "rdr_1", productId: "nonexistent" });
+
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 409 when the product is inactive", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    productFindUnique.mockResolvedValue({ ...product, isActive: false } as any);
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ readerId: "rdr_1", productId: "product-1" });
+
+    expect(res.status).toBe(409);
+  });
+
+  it("returns 409 when the reader already has a checkout in progress", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    productFindUnique.mockResolvedValue(product as any);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    cardCheckoutFindFirst.mockResolvedValue(cardCheckout as any);
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ readerId: "rdr_1", productId: "product-1" });
+
+    expect(res.status).toBe(409);
+    expect(createReaderCheckoutMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 502 when starting the SumUp reader checkout fails", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    productFindUnique.mockResolvedValue(product as any);
+    cardCheckoutFindFirst.mockResolvedValue(null);
+    createReaderCheckoutMock.mockRejectedValue(new Error("reader offline"));
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ readerId: "rdr_1", productId: "product-1" });
+
+    expect(res.status).toBe(502);
+    expect(cardCheckoutCreate).not.toHaveBeenCalled();
+  });
+
+  it("starts a reader checkout for a product and returns 201", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    productFindUnique.mockResolvedValue(product as any);
+    cardCheckoutFindFirst.mockResolvedValue(null);
+    createReaderCheckoutMock.mockResolvedValue({ clientTransactionId: "ctx-1" });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    cardCheckoutCreate.mockResolvedValue(cardCheckout as any);
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ readerId: "rdr_1", productId: "product-1", quantity: 2 });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ checkoutId: "card-1", status: "PENDING", product: { id: "product-1" }, quantity: 2 });
+    expect(createReaderCheckoutMock).toHaveBeenCalledWith({ readerId: "rdr_1", amountMinorUnit: expect.any(Number) });
+  });
+
+  it("starts a reader checkout for a custom amount and returns 201 with null product/quantity", async () => {
+    cardCheckoutFindFirst.mockResolvedValue(null);
+    createReaderCheckoutMock.mockResolvedValue({ clientTransactionId: "ctx-1" });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    cardCheckoutCreate.mockResolvedValue(cardCheckout as any);
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ readerId: "rdr_1", customAmount: 50 });
+
+    expect(res.status).toBe(201);
+    expect(productFindUnique).not.toHaveBeenCalled();
+    expect(res.body).toMatchObject({ product: null, quantity: null });
+  });
+});
+
+describe("POST /buvette/card/checkout/:id/confirm", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns 401 without a valid access token", async () => {
+    const res = await supertest(makeApp()).post("/buvette/card/checkout/card-1/confirm");
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 404 when the checkout does not exist", async () => {
+    cardCheckoutFindUnique.mockResolvedValue(null);
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout/nonexistent/confirm")
+      .set("Authorization", `Bearer ${makeToken()}`);
+
+    expect(res.status).toBe(404);
+  });
+
+  it("replays the stored outcome without a new SumUp call once already terminal", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    cardCheckoutFindUnique.mockResolvedValue({ ...cardCheckout, status: "SUCCESSFUL" } as any);
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout/card-1/confirm")
+      .set("Authorization", `Bearer ${makeToken()}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: "SUCCESSFUL", checkoutId: "card-1" });
+    expect(getTransactionByClientIdMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 502 when the SumUp transaction lookup fails", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    cardCheckoutFindUnique.mockResolvedValue(cardCheckout as any);
+    getTransactionByClientIdMock.mockRejectedValue(new Error("network blip"));
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout/card-1/confirm")
+      .set("Authorization", `Bearer ${makeToken()}`);
+
+    expect(res.status).toBe(502);
+  });
+
+  it("returns 202 while SumUp still reports PENDING", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    cardCheckoutFindUnique.mockResolvedValue(cardCheckout as any);
+    getTransactionByClientIdMock.mockResolvedValue("PENDING");
+    applyCardCheckoutStatusMock.mockResolvedValue({ outcome: "still-pending" });
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout/card-1/confirm")
+      .set("Authorization", `Bearer ${makeToken()}`);
+
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ status: "PENDING", checkoutId: "card-1" });
+  });
+
+  it("returns 200 with the resolved status once SumUp reports a terminal outcome", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    cardCheckoutFindUnique.mockResolvedValue(cardCheckout as any);
+    getTransactionByClientIdMock.mockResolvedValue("SUCCESSFUL");
+    applyCardCheckoutStatusMock.mockResolvedValue({ outcome: "resolved", status: "SUCCESSFUL" });
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout/card-1/confirm")
+      .set("Authorization", `Bearer ${makeToken()}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: "SUCCESSFUL", checkoutId: "card-1" });
+  });
+
+  it("treats a still-PENDING SumUp lookup as CANCELLED once the cancel grace period has elapsed", async () => {
+    const overdueCancel = {
+      ...cardCheckout,
+      cancelRequestedAt: new Date(Date.now() - 30 * 1000),
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    cardCheckoutFindUnique.mockResolvedValue(overdueCancel as any);
+    getTransactionByClientIdMock.mockResolvedValue("PENDING");
+    applyCardCheckoutStatusMock.mockResolvedValue({ outcome: "resolved", status: "CANCELLED" });
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout/card-1/confirm")
+      .set("Authorization", `Bearer ${makeToken()}`);
+
+    expect(res.status).toBe(200);
+    expect(applyCardCheckoutStatusMock).toHaveBeenCalledWith(
+      expect.objectContaining({ sumupStatus: "CANCELLED" }),
+    );
+  });
+
+  it("does not apply the cancel grace period while still within it", async () => {
+    const recentCancel = {
+      ...cardCheckout,
+      cancelRequestedAt: new Date(Date.now() - 1000),
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    cardCheckoutFindUnique.mockResolvedValue(recentCancel as any);
+    getTransactionByClientIdMock.mockResolvedValue("PENDING");
+    applyCardCheckoutStatusMock.mockResolvedValue({ outcome: "still-pending" });
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout/card-1/confirm")
+      .set("Authorization", `Bearer ${makeToken()}`);
+
+    expect(res.status).toBe(202);
+    expect(applyCardCheckoutStatusMock).toHaveBeenCalledWith(
+      expect.objectContaining({ sumupStatus: "PENDING" }),
+    );
+  });
+});
+
+describe("POST /buvette/card/checkout/:id/cancel", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns 401 without a valid access token", async () => {
+    const res = await supertest(makeApp()).post("/buvette/card/checkout/card-1/cancel");
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 404 when the checkout does not exist", async () => {
+    cardCheckoutFindUnique.mockResolvedValue(null);
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout/nonexistent/cancel")
+      .set("Authorization", `Bearer ${makeToken()}`);
+
+    expect(res.status).toBe(404);
+  });
+
+  it("returns the stored status without calling terminate once already resolved", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    cardCheckoutFindUnique.mockResolvedValue({ ...cardCheckout, status: "FAILED" } as any);
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout/card-1/cancel")
+      .set("Authorization", `Bearer ${makeToken()}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: "FAILED", checkoutId: "card-1" });
+    expect(terminateReaderCheckoutMock).not.toHaveBeenCalled();
+  });
+
+  it("requests termination and stamps cancelRequestedAt, without flipping status itself", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    cardCheckoutFindUnique.mockResolvedValue(cardCheckout as any);
+    terminateReaderCheckoutMock.mockResolvedValue(undefined);
+    cardCheckoutUpdate.mockResolvedValue({} as never);
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout/card-1/cancel")
+      .set("Authorization", `Bearer ${makeToken()}`);
+
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ status: "PENDING", checkoutId: "card-1", cancelRequested: true });
+    expect(terminateReaderCheckoutMock).toHaveBeenCalledWith("rdr_1");
+    expect(cardCheckoutUpdate).toHaveBeenCalledWith({
+      where: { id: "card-1" },
+      data: { cancelRequestedAt: expect.any(Date) },
+    });
+  });
+
+  it("still stamps cancelRequestedAt even when the terminate call itself fails (best-effort)", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    cardCheckoutFindUnique.mockResolvedValue(cardCheckout as any);
+    terminateReaderCheckoutMock.mockRejectedValue(new Error("device offline"));
+    cardCheckoutUpdate.mockResolvedValue({} as never);
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout/card-1/cancel")
+      .set("Authorization", `Bearer ${makeToken()}`);
+
+    expect(res.status).toBe(202);
+    expect(cardCheckoutUpdate).toHaveBeenCalled();
   });
 });

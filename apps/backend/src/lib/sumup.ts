@@ -2,6 +2,8 @@ import { env } from "../config/env.js";
 
 const TOKEN_URL = "https://api.sumup.com/token";
 const CHECKOUTS_URL = "https://api.sumup.com/v0.1/checkouts";
+const MERCHANTS_URL = "https://api.sumup.com/v0.1/merchants";
+const TRANSACTIONS_URL = "https://api.sumup.com/v2.1/merchants";
 
 // The only points<->currency peg defined anywhere in this app (see
 // CLAUDE.md "SumUp Integration"). Any future payment flow — including the
@@ -141,5 +143,170 @@ export async function getCheckoutStatus(checkoutId: string): Promise<SumUpChecko
   }
 
   const body = (await response.json()) as { status: SumUpCheckoutStatus };
+  return body.status;
+}
+
+// ---------------------------------------------------------------------------
+// Readers API (card-present, in-person payments on a paired physical
+// reader) — a different endpoint family from the hosted checkout above, used
+// by the buvette till's card payment mode (see src/routes/buvette.ts,
+// src/lib/buvetteCard.ts). Shares this module's OAuth/credentials exactly
+// like the hosted-checkout functions do.
+//
+// Built against the v0.1 Readers REST API (POST /v0.1/merchants/{code}/...),
+// the same API family/version as the hosted checkout above and the standard
+// merchant-OAuth integration model. SumUp's docs also describe a separate,
+// older v1 "Terminal Payments Cloud API" (POST /v1/readers/{id}/checkouts)
+// gated by a distinct "Affiliate Key" this app has no concept of — that is
+// NOT what this module implements. If the configured SumUp account actually
+// uses the affiliate/POS integration model instead of standard merchant
+// OAuth, these calls will not work and need porting to that API instead.
+export interface SumUpReader {
+  id: string;
+  name: string;
+  status: "unknown" | "processing" | "paired" | "expired";
+  device: { identifier: string; model: string };
+}
+
+/** Lists readers already paired with this merchant account. */
+export async function listReaders(): Promise<SumUpReader[]> {
+  const { merchantCode } = requireCredentials();
+  const token = await getAccessToken();
+
+  const response = await fetch(`${MERCHANTS_URL}/${merchantCode}/readers`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => "");
+    throw new Error(`SumUp reader list request failed: ${response.status} ${response.statusText} ${errorBody}`);
+  }
+
+  const body = (await response.json()) as { items: SumUpReader[] };
+  return body.items;
+}
+
+/**
+ * Pairs a physical reader with this merchant account using the pairing code
+ * shown on the device's own screen — a one-time, physical setup action, not
+ * something a cashier does per sale. BUREAU-only at the route level (see
+ * POST /buvette/readers/pair).
+ */
+export async function pairReader(params: { pairingCode: string; name: string }): Promise<SumUpReader> {
+  const { merchantCode } = requireCredentials();
+  const token = await getAccessToken();
+
+  const response = await fetch(`${MERCHANTS_URL}/${merchantCode}/readers`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ pairing_code: params.pairingCode, name: params.name }),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => "");
+    throw new Error(`SumUp reader pairing failed: ${response.status} ${response.statusText} ${errorBody}`);
+  }
+
+  return (await response.json()) as SumUpReader;
+}
+
+/**
+ * Starts a card-present checkout on a paired reader. Asynchronous on SumUp's
+ * side: the device must be online, and SumUp then has 60 seconds to start
+ * the payment on it — any other checkout for the same device is rejected
+ * during that window (mirrored server-side by the PENDING-per-reader guard
+ * in POST /buvette/card/checkout). There is no synchronous outcome here;
+ * the caller must poll getTransactionByClientId with the returned id (see
+ * that function's doc comment for why — SumUp exposes no dedicated
+ * reader-checkout status endpoint).
+ */
+export async function createReaderCheckout(params: {
+  readerId: string;
+  amountMinorUnit: number;
+}): Promise<{ clientTransactionId: string }> {
+  const { merchantCode } = requireCredentials();
+  const token = await getAccessToken();
+
+  const response = await fetch(`${MERCHANTS_URL}/${merchantCode}/readers/${params.readerId}/checkout`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      total_amount: {
+        currency: SUMUP_CURRENCY,
+        minor_unit: 2,
+        value: params.amountMinorUnit,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => "");
+    throw new Error(`SumUp reader checkout creation failed: ${response.status} ${response.statusText} ${errorBody}`);
+  }
+
+  const body = (await response.json()) as { data: { client_transaction_id: string } };
+  return { clientTransactionId: body.data.client_transaction_id };
+}
+
+/**
+ * Requests SumUp stop the current transaction on a reader. Asynchronous and
+ * gives no confirmation it worked, and only has any effect while the device
+ * is online and still waiting for cardholder action — if the card has
+ * already been presented, this can do nothing. Callers must never treat a
+ * successful call here as proof the charge was actually stopped; the caller
+ * (see src/lib/buvetteCard.ts) still resolves the checkout from SumUp's
+ * actual transaction status, never from this call's own success.
+ */
+export async function terminateReaderCheckout(readerId: string): Promise<void> {
+  const { merchantCode } = requireCredentials();
+  const token = await getAccessToken();
+
+  const response = await fetch(`${MERCHANTS_URL}/${merchantCode}/readers/${readerId}/terminate`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => "");
+    throw new Error(`SumUp reader terminate failed: ${response.status} ${response.statusText} ${errorBody}`);
+  }
+}
+
+export type SumUpTransactionStatus = "PENDING" | "SUCCESSFUL" | "CANCELLED" | "FAILED" | "REFUNDED" | "CHARGE_BACK";
+
+/**
+ * Looks up the transaction a reader checkout produced, by the
+ * client_transaction_id createReaderCheckout returned — the "poll" half of
+ * the reader-checkout flow. SumUp's Readers API has no dedicated
+ * status-by-checkout-id endpoint; the transaction only exists once SumUp has
+ * actually started processing the payment, so a 404 here means no
+ * transaction has been created yet and the checkout should be treated as
+ * still PENDING, not as an error.
+ */
+export async function getTransactionByClientId(clientTransactionId: string): Promise<SumUpTransactionStatus> {
+  const { merchantCode } = requireCredentials();
+  const token = await getAccessToken();
+
+  const response = await fetch(
+    `${TRANSACTIONS_URL}/${merchantCode}/transactions?client_transaction_id=${encodeURIComponent(clientTransactionId)}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+
+  if (response.status === 404) {
+    return "PENDING";
+  }
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => "");
+    throw new Error(`SumUp transaction lookup failed: ${response.status} ${response.statusText} ${errorBody}`);
+  }
+
+  const body = (await response.json()) as { status: SumUpTransactionStatus };
   return body.status;
 }

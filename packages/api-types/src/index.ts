@@ -92,3 +92,39 @@ export interface RechargeConfirmResponse {
   newBalance?: number;
   error?: string;
 }
+
+export interface Reader {
+  id: string;
+  name: string;
+  status: "unknown" | "processing" | "paired" | "expired";
+}
+
+export interface ReadersResponse {
+  readers: Reader[];
+}
+
+export interface CardCheckoutRequest {
+  readerId: string;
+  productId?: string;
+  customAmount?: number;
+  quantity?: number;
+}
+
+export type CardCheckoutStatus = "PENDING" | "SUCCESSFUL" | "FAILED" | "CANCELLED";
+
+export interface CardCheckoutResponse {
+  checkoutId: string;
+  readerId: string;
+  product: Product | null;
+  quantity: number | null;
+  amountPoints: number;
+  amount: number;
+  currency: string;
+  status: CardCheckoutStatus;
+}
+
+export interface CardCheckoutStatusResponse {
+  status: CardCheckoutStatus;
+  checkoutId: string;
+  cancelRequested?: boolean;
+}

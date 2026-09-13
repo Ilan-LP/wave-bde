@@ -236,6 +236,48 @@ enum RechargeCheckoutStatus {
   EXPIRED
 }
 
+/// One row per card-present sale attempted at the till via a paired SumUp
+/// reader (the Readers API, a different endpoint family from the hosted
+/// checkout RechargeCheckout above). Deliberately independent of the points
+/// ledger: a card-paying customer is never identified via a QR scan, so
+/// there is no PointsAccount to credit or debit and no Transaction row is
+/// created for these — this model exists purely to track the async
+/// reader-checkout lifecycle (PENDING -> SUCCESSFUL/FAILED/CANCELLED)
+/// race-safely and to anchor the audit log, the same way RechargeCheckout
+/// tracks the self-service recharge lifecycle.
+model BuvetteCardCheckout {
+  id                   String                    @id @default(cuid())
+  // SumUp reader id the checkout was started on (not a local FK — paired
+  // readers are not mirrored into this DB, see src/routes/buvette.ts's
+  // GET /buvette/readers, which proxies SumUp's reader list live).
+  readerId             String
+  clientTransactionId  String                    @unique
+  amountPoints         Int
+  amountMinorUnit      Int
+  currency             String
+  status               BuvetteCardCheckoutStatus @default(PENDING)
+  // Set when the cashier hits Cancel while still PENDING. Does not by
+  // itself flip status — SumUp's terminate call gives no confirmation it
+  // worked, so the row only resolves once a poll observes SumUp's actual
+  // outcome (see src/lib/buvetteCard.ts).
+  cancelRequestedAt    DateTime?
+  // Product/custom-amount breakdown recorded by value, same convention as
+  // Transaction.metadata in buvette.ts's /scan handler.
+  metadata             Json?
+  createdAt            DateTime                  @default(now())
+  resolvedAt           DateTime?
+
+  @@index([readerId, status])
+  @@index([createdAt])
+}
+
+enum BuvetteCardCheckoutStatus {
+  PENDING
+  SUCCESSFUL
+  FAILED
+  CANCELLED
+}
+
 // ---------------------------------------------------------------------------
 // Products
 // ---------------------------------------------------------------------------

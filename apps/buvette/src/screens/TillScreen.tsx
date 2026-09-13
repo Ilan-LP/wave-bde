@@ -70,6 +70,12 @@ export function TillScreen({ auth }: TillScreenProps) {
     setMode(null);
   }
 
+  function handleCardComplete() {
+    setOutcome({ variant: "success", message: "Card sale complete." });
+    setSale(null);
+    setMode(null);
+  }
+
   return (
     <main className="mx-auto min-h-screen max-w-lg space-y-6 bg-white p-4">
       <header className="flex items-center justify-between">
@@ -136,7 +142,9 @@ export function TillScreen({ auth }: TillScreenProps) {
       {sale && mode === "cash" && (
         <CashPaymentFlow sale={sale} onComplete={handleCashComplete} onCancel={() => setMode(null)} />
       )}
-      {sale && mode === "card" && <CardPaymentFlow sale={sale} onCancel={() => setMode(null)} />}
+      {sale && mode === "card" && (
+        <CardPaymentFlow sale={sale} onComplete={handleCardComplete} onCancel={() => setMode(null)} />
+      )}
     </main>
   );
 }

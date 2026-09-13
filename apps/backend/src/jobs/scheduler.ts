@@ -1,5 +1,6 @@
 import { runAuditLogExport } from "./auditLogExport.js";
 import { runRechargeReconciliation } from "./rechargeReconciliation.js";
+import { runBuvetteCardReconciliation } from "./buvetteCardReconciliation.js";
 
 const EXPORT_HOUR_UTC = 3;
 
@@ -73,4 +74,38 @@ async function runReconciliationAndReschedule(): Promise<void> {
  */
 export function scheduleRechargeReconciliation(): void {
   scheduleNextReconciliation();
+}
+
+// Tighter than the recharge job's 15 minutes: a card checkout's SumUp-side
+// window is already only 60 seconds (see CARD_CHECKOUT_STALE_MS in
+// src/lib/buvetteCard.ts), so a stuck row is worth checking on sooner — the
+// common case (a poll from a still-open till tab) already resolves most
+// checkouts long before this job would ever see them; this is purely the
+// crashed-tab backstop.
+const BUVETTE_CARD_RECONCILIATION_INTERVAL_MS = 5 * 60 * 1000;
+
+function scheduleNextBuvetteCardReconciliation(): void {
+  setTimeout(() => {
+    void runBuvetteCardReconciliationAndReschedule();
+  }, BUVETTE_CARD_RECONCILIATION_INTERVAL_MS);
+}
+
+async function runBuvetteCardReconciliationAndReschedule(): Promise<void> {
+  try {
+    await runBuvetteCardReconciliation();
+  } catch (err) {
+    console.error("[buvette-card-reconciliation] scheduled run failed", err);
+  } finally {
+    scheduleNextBuvetteCardReconciliation();
+  }
+}
+
+/**
+ * Starts the buvette card-checkout reconciliation job, firing every
+ * BUVETTE_CARD_RECONCILIATION_INTERVAL_MS (5 minutes). Same
+ * recursive-setTimeout shape as the other two jobs above. Call once from
+ * src/index.ts, never from src/app.ts/createApp().
+ */
+export function scheduleBuvetteCardReconciliation(): void {
+  scheduleNextBuvetteCardReconciliation();
 }
