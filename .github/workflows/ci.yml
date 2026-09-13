@@ -26,6 +26,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # GHSA-ggr8-5vv4-36mx (deepmerge-ts, high) is exempted via
+      # pnpm-workspace.yaml's auditConfig.ignoreGhsas: it's pinned to an exact
+      # vulnerable version by @prisma/config even in Prisma's latest 7.x
+      # release, so no released Prisma version (major or otherwise) fixes it
+      # yet, and it's only reachable via the `prisma` CLI devDependency, never
+      # shipped in the pruned production image. See CLAUDE.md's dependency
+      # health notes. Remove that entry once Prisma patches it upstream.
+      - name: Audit dependencies
+        run: pnpm audit --audit-level=high
+
       - name: Generate Prisma Client
         run: pnpm --filter @wave/backend run prisma:generate
 
