@@ -442,6 +442,7 @@ buvetteRouter.post(
       return;
     }
 
+    let forcedCancel = false;
     if (
       sumupStatus === "PENDING" &&
       cardCheckout.cancelRequestedAt &&
@@ -450,7 +451,13 @@ buvetteRouter.post(
       // Cancel was requested a while ago and SumUp still shows no
       // transaction for this checkout — trust the termination worked rather
       // than leaving the till waiting on a payment that was never started.
+      // This is a forced call, not an observed SumUp status, so it's flagged
+      // (forcedCancel) so applyCardCheckoutStatus stamps forcedCancelAt —
+      // the reconciliation job later re-checks this against SumUp's real
+      // status once, in case SumUp actually completed the charge after all
+      // (see src/lib/buvetteCard.ts's recheckForcedCancellation).
       sumupStatus = "CANCELLED";
+      forcedCancel = true;
     }
 
     const resolution = await applyCardCheckoutStatus({
@@ -459,6 +466,7 @@ buvetteRouter.post(
       actorId: req.auth!.sub,
       ipAddress: req.ip ?? null,
       source: "poll-endpoint",
+      forcedCancel,
     });
 
     if (resolution.outcome === "still-pending") {

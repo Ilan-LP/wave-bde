@@ -261,6 +261,16 @@ model BuvetteCardCheckout {
   // worked, so the row only resolves once a poll observes SumUp's actual
   // outcome (see src/lib/buvetteCard.ts).
   cancelRequestedAt    DateTime?
+  // Set instead of (never alongside) a real SumUp CANCELLED status: when the
+  // confirm poll gives up waiting past CANCEL_GRACE_MS and forces status to
+  // CANCELLED without SumUp ever having confirmed it, this is stamped so the
+  // row is distinguishable from a genuine SumUp cancellation and so the
+  // reconciliation job can find it for a bounded one-time follow-up check
+  // (see src/lib/buvetteCard.ts's recheckForcedCancellation).
+  forcedCancelAt       DateTime?
+  // Set once that one-time follow-up check has run (whatever its outcome),
+  // so a forced-cancel row is only ever re-checked once, not forever.
+  forcedCancelRecheckedAt DateTime?
   // Product/custom-amount breakdown recorded by value, same convention as
   // Transaction.metadata in buvette.ts's /scan handler.
   metadata             Json?
@@ -269,6 +279,7 @@ model BuvetteCardCheckout {
 
   @@index([readerId, status])
   @@index([createdAt])
+  @@index([status, forcedCancelAt, forcedCancelRecheckedAt])
 }
 
 enum BuvetteCardCheckoutStatus {

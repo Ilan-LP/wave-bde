@@ -435,6 +435,8 @@ const cardCheckout = {
   currency: "EUR",
   status: "PENDING" as const,
   cancelRequestedAt: null as Date | null,
+  forcedCancelAt: null as Date | null,
+  forcedCancelRecheckedAt: null as Date | null,
   metadata: null,
   createdAt: new Date(),
   resolvedAt: null,
@@ -731,7 +733,7 @@ describe("POST /buvette/card/checkout/:id/confirm", () => {
 
     expect(res.status).toBe(200);
     expect(applyCardCheckoutStatusMock).toHaveBeenCalledWith(
-      expect.objectContaining({ sumupStatus: "CANCELLED" }),
+      expect.objectContaining({ sumupStatus: "CANCELLED", forcedCancel: true }),
     );
   });
 
@@ -751,7 +753,7 @@ describe("POST /buvette/card/checkout/:id/confirm", () => {
 
     expect(res.status).toBe(202);
     expect(applyCardCheckoutStatusMock).toHaveBeenCalledWith(
-      expect.objectContaining({ sumupStatus: "PENDING" }),
+      expect.objectContaining({ sumupStatus: "PENDING", forcedCancel: false }),
     );
   });
 });
