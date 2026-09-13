@@ -241,6 +241,13 @@ buvetteRouter.post(
 // presented, so if a transaction was going to appear at all it appears fast.
 const CANCEL_GRACE_MS = 8 * 1000;
 
+// A real-money ceiling on a single card checkout, distinct from
+// MAX_CUSTOM_AMOUNT/MAX_QUANTITY above — those only guard against an Int4
+// overflow on the points ledger and, combined, still allow a checkout
+// converting to ~€666,667. PLACEHOLDER VALUE, not confirmed with Ilan —
+// 50_000 cents (€500) is a guess pending his sign-off on the real limit.
+const MAX_CARD_CHECKOUT_AMOUNT_CENTS = 50_000;
+
 // Lists readers already paired with the configured merchant account, for
 // the till's reader picker (apps/buvette/src/components/ReaderPicker.tsx).
 // Any logged-in member, same "any logged-in member" RBAC shape as the rest
@@ -421,6 +428,16 @@ buvetteRouter.post(
     }
 
     const amountMinorUnit = pointsToAmountMinorUnits(totalPrice);
+
+    // Distinct from the customAmount/quantity bound errors above — those
+    // guard the points ledger against Int4 overflow, this guards the real
+    // money actually charged to a card.
+    if (amountMinorUnit > MAX_CARD_CHECKOUT_AMOUNT_CENTS) {
+      res.status(400).json({
+        error: `card checkout amount exceeds the maximum allowed (${MAX_CARD_CHECKOUT_AMOUNT_CENTS / 100} EUR)`,
+      });
+      return;
+    }
 
     let checkout;
     try {

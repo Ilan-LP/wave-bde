@@ -711,6 +711,20 @@ describe("POST /buvette/card/checkout", () => {
     expect(createReaderCheckoutMock).toHaveBeenCalledWith({ readerId: "rdr_1", amountMinorUnit: expect.any(Number) });
   });
 
+  it("returns 400 when the converted amount exceeds MAX_CARD_CHECKOUT_AMOUNT_CENTS", async () => {
+    cardCheckoutFindFirst.mockResolvedValue(null);
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      // 10,000 points -> 66,667 cents at 15pts/EUR, above the 50,000-cent cap.
+      .send({ readerId: "rdr_1", customAmount: 10000 });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "card checkout amount exceeds the maximum allowed (500 EUR)" });
+    expect(createReaderCheckoutMock).not.toHaveBeenCalled();
+  });
+
   it("starts a reader checkout for a custom amount and returns 201 with null product/quantity", async () => {
     cardCheckoutFindFirst.mockResolvedValue(null);
     createReaderCheckoutMock.mockResolvedValue({ clientTransactionId: "ctx-1" });
