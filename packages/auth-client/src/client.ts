@@ -53,6 +53,12 @@ async function readErrorMessage(res: Response): Promise<string> {
 export function createAuthClient(apiUrl: string): AuthClient {
   let session: AuthSession | null = loadSession();
   const listeners = new Set<() => void>();
+  // Single-flight de-duplication: two callers racing near token expiry must
+  // share one /auth/refresh call, not each fire their own — the backend's
+  // reuse-detection treats the losing call's now-stale refresh token as a
+  // theft signal and revokes every session (see CLAUDE.md's Authentication
+  // section).
+  let refreshInFlight: Promise<string | null> | null = null;
 
   function setSession(next: AuthSession | null): void {
     session = next;
@@ -124,6 +130,15 @@ export function createAuthClient(apiUrl: string): AuthClient {
     return next.accessToken;
   }
 
+  function refreshShared(): Promise<string | null> {
+    if (!refreshInFlight) {
+      refreshInFlight = refresh().finally(() => {
+        refreshInFlight = null;
+      });
+    }
+    return refreshInFlight;
+  }
+
   async function getValidAccessToken(): Promise<string | null> {
     if (!session) {
       return null;
@@ -131,7 +146,7 @@ export function createAuthClient(apiUrl: string): AuthClient {
     if (session.accessTokenExpiresAt - EXPIRY_SAFETY_MARGIN_MS > Date.now()) {
       return session.accessToken;
     }
-    return refresh();
+    return refreshShared();
   }
 
   async function authorizedFetch(path: string, init: RequestInit = {}): Promise<Response> {
