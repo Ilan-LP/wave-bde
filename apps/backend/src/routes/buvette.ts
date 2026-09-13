@@ -401,6 +401,25 @@ buvetteRouter.post(
       return;
     }
 
+    // readerId was previously accepted as any non-empty string, never
+    // checked against reality — a caller could target a reader that was
+    // never paired with this merchant account. Validated against a live
+    // listReaders() result (the same call GET /buvette/readers already
+    // makes) rather than a format regex, since the goal is confirming the
+    // device is actually paired, not just that the string looks plausible.
+    let pairedReaders;
+    try {
+      pairedReaders = await listReaders();
+    } catch (err) {
+      console.error("[buvette-card] failed to list readers for validation", err);
+      res.status(502).json({ error: "failed to verify reader" });
+      return;
+    }
+    if (!pairedReaders.some((r) => r.id === readerId)) {
+      res.status(404).json({ error: "reader not found" });
+      return;
+    }
+
     const amountMinorUnit = pointsToAmountMinorUnits(totalPrice);
 
     let checkout;

@@ -579,6 +579,10 @@ describe("POST /buvette/card/checkout", () => {
     // resetAllMocks() also wipes the vi.mock() factory's inline
     // implementation above, so it must be re-armed per test.
     pointsToAmountMinorUnitsMock.mockImplementation((points) => Math.round((points * 100) / 15));
+    // Default: "rdr_1" (the readerId every test below sends) is a
+    // currently-paired reader. Tests exercising the readerId-validation
+    // rejection paths override this per-test.
+    listReadersMock.mockResolvedValue([{ id: "rdr_1", name: "Frontdesk", status: "paired", device: { identifier: "U1", model: "solo" } }]);
   });
 
   it("returns 401 without a valid access token", async () => {
@@ -639,6 +643,38 @@ describe("POST /buvette/card/checkout", () => {
       .send({ readerId: "rdr_1", productId: "product-1" });
 
     expect(res.status).toBe(409);
+    expect(createReaderCheckoutMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when readerId does not match a currently paired reader", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    productFindUnique.mockResolvedValue(product as any);
+    cardCheckoutFindFirst.mockResolvedValue(null);
+    listReadersMock.mockResolvedValue([{ id: "rdr_other", name: "Backdesk", status: "paired", device: { identifier: "U2", model: "solo" } }]);
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ readerId: "rdr_1", productId: "product-1" });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "reader not found" });
+    expect(createReaderCheckoutMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 502 when listing readers for validation fails", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    productFindUnique.mockResolvedValue(product as any);
+    cardCheckoutFindFirst.mockResolvedValue(null);
+    listReadersMock.mockRejectedValue(new Error("sumup unreachable"));
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ readerId: "rdr_1", productId: "product-1" });
+
+    expect(res.status).toBe(502);
+    expect(res.body).toEqual({ error: "failed to verify reader" });
     expect(createReaderCheckoutMock).not.toHaveBeenCalled();
   });
 
