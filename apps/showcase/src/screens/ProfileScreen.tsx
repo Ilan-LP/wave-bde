@@ -15,6 +15,11 @@ const MAX_RECHARGE_POINTS = 3000;
 // the server.
 const POINTS_PER_EUR = 15;
 const POLL_INTERVAL_MS = 3000;
+// A transient network blip shouldn't end the poll loop on the first miss —
+// tolerate a few consecutive confirmRecharge failures (the recharge may
+// still be genuinely pending server-side) before giving up and showing an
+// error.
+const MAX_POLL_FAILURES = 3;
 // Refetch the QR this long before its returned expiresAt, so a member
 // looking at an already-loaded tab always gets a fresh code well before the
 // old one stops scanning at the till (see qrToken.ts's QR_TOKEN_TTL_MS).
@@ -45,6 +50,7 @@ export function ProfileScreen({ auth }: ProfileScreenProps) {
   const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollFailuresRef = useRef(0);
 
   const loadBalance = useCallback(() => {
     fetchBalance()
@@ -120,6 +126,7 @@ export function ProfileScreen({ auth }: ProfileScreenProps) {
       clearInterval(pollTimer.current);
       pollTimer.current = null;
     }
+    pollFailuresRef.current = 0;
     setPendingRechargeId(null);
     setPaymentUrl(null);
   }, []);
@@ -131,6 +138,7 @@ export function ProfileScreen({ auth }: ProfileScreenProps) {
     async (rechargeId: string) => {
       try {
         const result = await confirmRecharge(rechargeId);
+        pollFailuresRef.current = 0;
         if (result.status === "PENDING") {
           return;
         }
@@ -147,6 +155,12 @@ export function ProfileScreen({ auth }: ProfileScreenProps) {
           setOutcome({ variant: "error", message: result.error ?? "Payment failed or was cancelled." });
         }
       } catch (err) {
+        pollFailuresRef.current += 1;
+        if (pollFailuresRef.current < MAX_POLL_FAILURES) {
+          // Transient blip — keep polling, the recharge may still be
+          // genuinely pending server-side.
+          return;
+        }
         stopPolling();
         setOutcome({ variant: "error", message: err instanceof Error ? err.message : "Failed to check payment status." });
       }
