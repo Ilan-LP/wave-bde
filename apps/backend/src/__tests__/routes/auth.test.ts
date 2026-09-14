@@ -390,6 +390,12 @@ describe("POST /auth/logout", () => {
     expect(res.status).toBe(204);
   });
 
+  it("is idempotent for a missing/non-string token", async () => {
+    const res = await supertest(makeApp()).post("/auth/logout").send({});
+    expect(res.status).toBe(204);
+    expect(refreshTokenUpdateMany).not.toHaveBeenCalled();
+  });
+
   it("revokes the presented token", async () => {
     const tokenHash = hashRefreshToken("some-token");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

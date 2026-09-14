@@ -265,7 +265,10 @@ authRouter.post("/refresh", asyncHandler(async (req, res) => {
 authRouter.post("/logout", asyncHandler(async (req, res) => {
   const { refreshToken } = req.body as { refreshToken?: unknown };
   if (typeof refreshToken !== "string") {
-    res.status(400).json({ error: "refreshToken is required" });
+    // Idempotent, same as an already-revoked token — see CLAUDE.md
+    // "Authentication": "a missing/garbage/already-revoked token still
+    // returns 204".
+    res.status(204).send();
     return;
   }
 
