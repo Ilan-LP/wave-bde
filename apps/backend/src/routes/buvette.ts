@@ -581,6 +581,7 @@ buvetteRouter.post(
       return;
     }
     if (cardCheckout.status !== "PENDING") {
+      res.locals.skipAudit = true;
       res.status(200).json({ status: cardCheckout.status, checkoutId: cardCheckout.id });
       return;
     }
