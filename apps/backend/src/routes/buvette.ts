@@ -569,14 +569,31 @@ buvetteRouter.post(
       });
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
-        // Lost the race against the findFirst pre-check above: the DB-level
-        // partial unique index (readerId WHERE status = 'PENDING', see
-        // schema.prisma's BuvetteCardCheckout doc comment) is the real
-        // guarantee here, since that pre-check and this create are not
-        // atomic together. Same message as the pre-check's own 409 so a
-        // caller can't tell which layer caught it.
-        res.status(409).json({ error: "this reader already has a checkout in progress" });
-        return;
+        // BuvetteCardCheckout has two independent unique constraints —
+        // clientTransactionId and the readerId-WHERE-PENDING partial index
+        // (see schema.prisma's doc comment) — so a bare P2002 doesn't by
+        // itself mean "reader busy". Inspect which one actually collided:
+        // err.meta.target is either an array of field names (for a
+        // constraint Prisma recognizes from its own schema, e.g.
+        // clientTransactionId) or the raw DB constraint/index name as a
+        // string (for the hand-written partial index, which isn't in
+        // schema.prisma and so isn't in Prisma's own metadata).
+        const target = err.meta?.target;
+        const targetStr = Array.isArray(target) ? target.join(",") : String(target ?? "");
+        if (targetStr.includes("readerId")) {
+          // Lost the race against the findFirst pre-check above: the
+          // DB-level partial unique index is the real guarantee here, since
+          // that pre-check and this create are not atomic together. Same
+          // message as the pre-check's own 409 so a caller can't tell which
+          // layer caught it.
+          res.status(409).json({ error: "this reader already has a checkout in progress" });
+          return;
+        }
+        // A clientTransactionId collision is a different, unexpected
+        // problem (e.g. a duplicate id from SumUp) — not the reader-busy
+        // race this catch was written for. Don't mislabel it as "reader
+        // busy"; fall through to the generic error handler below, which
+        // asyncHandler/app.ts's error middleware turns into a clean 500.
       }
       throw err;
     }

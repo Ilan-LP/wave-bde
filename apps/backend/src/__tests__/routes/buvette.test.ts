@@ -758,6 +758,9 @@ describe("POST /buvette/card/checkout", () => {
       new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
         code: "P2002",
         clientVersion: "test",
+        // The hand-written partial index isn't in schema.prisma, so Prisma
+        // can't map it to field names — it reports the raw constraint name.
+        meta: { target: "BuvetteCardCheckout_readerId_pending_key" },
       }),
     );
 
@@ -768,6 +771,36 @@ describe("POST /buvette/card/checkout", () => {
 
     expect(res.status).toBe(409);
     expect(res.body).toEqual({ error: "this reader already has a checkout in progress" });
+  });
+
+  it("does not return 409 when the P2002 is a clientTransactionId collision instead", async () => {
+    // A different unique constraint colliding is not the reader-busy race
+    // the 409 branch exists for — it should fall through to the generic
+    // error handler instead of being mislabeled. This file's makeApp() only
+    // mounts the router (no app.ts error middleware), so the thrown error
+    // reaches Express's own default handler rather than the real
+    // `{ error: "internal server error" }` JSON body — asserting the status
+    // isn't 409 is what's actually under test here.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    productFindUnique.mockResolvedValue(product as any);
+    cardCheckoutFindFirst.mockResolvedValue(null);
+    createReaderCheckoutMock.mockResolvedValue({ clientTransactionId: "ctx-1" });
+    cardCheckoutCreate.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+        code: "P2002",
+        clientVersion: "test",
+        // A field Prisma does recognize from schema.prisma reports as an
+        // array of field names, not a raw constraint-name string.
+        meta: { target: ["clientTransactionId"] },
+      }),
+    );
+
+    const res = await supertest(makeApp())
+      .post("/buvette/card/checkout")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ readerId: "rdr_1", productId: "product-1" });
+
+    expect(res.status).not.toBe(409);
   });
 });
 
