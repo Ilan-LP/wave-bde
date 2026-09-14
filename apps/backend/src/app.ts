@@ -139,6 +139,18 @@ export function createApp(): Express {
     message: { error: "too many requests, try again shortly" },
   });
 
+  // Light per-IP throttle on the two self-service read routes that
+  // otherwise had none (unlike every other route family) — GET /me/balance,
+  // GET /me/qrcode. Doesn't cover /me/recharge, which already has its own
+  // rechargeRateLimit.
+  const meReadRateLimit = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "too many requests, try again shortly" },
+  });
+
   // Covers reader listing/pairing and the whole card-checkout lifecycle
   // (create/confirm/cancel), per-IP like the limiters above. Higher than
   // rechargeRateLimit since the cashier UI polls confirm roughly every 2s
@@ -167,6 +179,7 @@ export function createApp(): Express {
   app.use("/auth", authRouter);
   // Prefix match: also covers /me/recharge/:id/confirm.
   app.use("/me/recharge", rechargeRateLimit);
+  app.use(["/me/balance", "/me/qrcode"], meReadRateLimit);
   app.use("/me", meRouter);
   app.use("/products", productsRouter);
   app.use("/buvette/scan", buvetteScanRateLimit, buvetteQrReplayRateLimit);
