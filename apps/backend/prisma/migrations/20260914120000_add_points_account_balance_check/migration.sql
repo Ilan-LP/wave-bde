@@ -1,0 +1,14 @@
+-- DB-level floor on PointsAccount.balance, mirroring the floor already
+-- enforced by the application-layer conditional updateMany in
+-- POST /buvette/scan and POST /me/recharge/:id/confirm (see CLAUDE.md's
+-- "Atomicity" notes). Not expressible in schema.prisma — Prisma has no CHECK
+-- constraint syntax as of 6.x — hand-written, same pattern as the
+-- BuvetteCardCheckout partial unique index migration
+-- (20260913160000_add_buvette_card_checkout_pending_unique).
+--
+-- Purely additive/defensive: the application-layer guard already prevents
+-- balance from ever going negative through normal request paths; this adds
+-- a backstop against a future code path (a manual ADJUSTMENT, a bug, a
+-- direct DB write) doing so without going through that guard. No existing
+-- row is validated, modified, or backfilled by adding this constraint.
+ALTER TABLE "PointsAccount" ADD CONSTRAINT "PointsAccount_balance_check" CHECK ("balance" >= 0);

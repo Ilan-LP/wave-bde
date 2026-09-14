@@ -168,6 +168,14 @@ model PointsAccount {
   id        String   @id @default(cuid())
   userId    String   @unique
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Floored at 0 by the application-layer conditional updateMany in
+  // POST /buvette/scan and POST /me/recharge/:id/confirm (see CLAUDE.md's
+  // "Atomicity" notes). A DB-level backstop for the same floor also exists —
+  // CHECK (balance >= 0), migration
+  // 20260914120000_add_points_account_balance_check — hand-written, same
+  // reasoning as the BuvetteCardCheckout partial-unique-index migration
+  // (Prisma has no CHECK constraint syntax as of 6.x, so this isn't
+  // representable here).
   balance   Int      @default(0)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
