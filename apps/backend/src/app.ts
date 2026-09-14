@@ -180,13 +180,31 @@ export function createApp(): Express {
     message: { error: "too many requests, try again shortly" },
   });
 
-  // Covers reader listing/pairing and the whole card-checkout lifecycle
+  // Covers reader listing and the whole card-checkout lifecycle
   // (create/confirm/cancel), per-IP like the limiters above. Higher than
   // rechargeRateLimit since the cashier UI polls confirm roughly every 2s
   // while a card checkout is in flight (~30 calls/min from that alone).
+  // Does NOT cover POST /buvette/readers/pair — see buvetteReaderPairRateLimit
+  // below, split out the same way rechargeConfirmRateLimit was split from
+  // rechargeRateLimit (a one-shot admin action shouldn't share a bucket with
+  // a route that gets hammered by polling).
   const buvetteCardRateLimit = rateLimit({
     windowMs: 60 * 1000,
     limit: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "too many requests, try again shortly" },
+  });
+
+  // POST /buvette/readers/pair is a one-shot, BUREAU-only physical hardware
+  // setup action, not a polled or high-frequency route — sharing
+  // buvetteCardRateLimit's 60/min bucket with the confirm-poll traffic gave
+  // it far more headroom than it needs and let it eat into that shared
+  // budget. A low, dedicated limit is plenty; a few retries for a mistyped
+  // pairing code are still comfortably covered.
+  const buvetteReaderPairRateLimit = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 10,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "too many requests, try again shortly" },
@@ -230,7 +248,13 @@ export function createApp(): Express {
   app.use("/products", productsRateLimit, productsRouter);
   app.use("/buvette/scan", buvetteScanRateLimit, buvetteQrReplayRateLimit);
   app.use("/buvette/cash", buvetteCashRateLimit);
-  app.use(["/buvette/card", "/buvette/readers"], buvetteCardRateLimit);
+  // Exact-route mounts for the two /buvette/readers endpoints (not a shared
+  // "/buvette/readers" prefix mount) so pairing gets its own bucket instead
+  // of also matching the general one below — same "each endpoint matches
+  // exactly one bucket" reasoning as the recharge create/confirm split.
+  app.get("/buvette/readers", buvetteCardRateLimit);
+  app.post("/buvette/readers/pair", buvetteReaderPairRateLimit);
+  app.use("/buvette/card", buvetteCardRateLimit);
   app.use("/buvette", buvetteRouter);
 
   app.use(errorHandler);
