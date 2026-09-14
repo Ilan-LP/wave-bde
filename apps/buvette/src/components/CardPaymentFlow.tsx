@@ -59,6 +59,11 @@ export function CardPaymentFlow({ sale, onComplete, onCancel }: CardPaymentFlowP
   // checkouts for the same sale (see ScanPaymentFlow.tsx for the equivalent
   // concern with the camera).
   const startedRef = useRef(false);
+  // Guards against overlapping poll requests: on a slow/backed-up network a
+  // prior pollCardCheckout call may still be outstanding when the next
+  // interval tick fires, and an out-of-order response could momentarily
+  // display a stale status.
+  const pollInFlightRef = useRef(false);
 
   useEffect(() => {
     if (!readerId || startedRef.current) {
@@ -90,9 +95,16 @@ export function CardPaymentFlow({ sale, onComplete, onCancel }: CardPaymentFlowP
       return;
     }
     const interval = setInterval(() => {
+      if (pollInFlightRef.current) {
+        return;
+      }
+      pollInFlightRef.current = true;
       pollCardCheckout(checkoutId)
         .then((result) => setStatus(result.status))
-        .catch((err: unknown) => setError(mapCardError(err)));
+        .catch((err: unknown) => setError(mapCardError(err)))
+        .finally(() => {
+          pollInFlightRef.current = false;
+        });
     }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [checkoutId, status]);
