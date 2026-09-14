@@ -20,6 +20,30 @@ export interface SumUpCheckout {
   hostedCheckoutUrl?: string;
 }
 
+const MAX_ERROR_BODY_CHARS = 300;
+
+// Every thrown Error below embeds the raw upstream response body verbatim,
+// and every call site pipes that straight into console.error() (see
+// CLAUDE.md's L1 fix note). An upstream validation error isn't expected to
+// contain secrets, but nothing guarantees it, so redact anything
+// sensitive-looking before it ever reaches a thrown message. Redact first,
+// then truncate — truncating first could slice a secret in half and still
+// leak the leading fragment.
+const SENSITIVE_KEY_PATTERN =
+  /"(access_token|refresh_token|client_secret|password|token|secret|api_key|authorization|pairing_code)"\s*:\s*"[^"]*"/gi;
+const BEARER_TOKEN_PATTERN = /Bearer\s+[A-Za-z0-9._-]+/gi;
+const LONG_OPAQUE_TOKEN_PATTERN = /[A-Za-z0-9._-]{32,}/g;
+
+function sanitizeUpstreamErrorBody(raw: string): string {
+  const redacted = raw
+    .replace(SENSITIVE_KEY_PATTERN, (_match, key: string) => `"${key}":"[REDACTED]"`)
+    .replace(BEARER_TOKEN_PATTERN, "Bearer [REDACTED]")
+    .replace(LONG_OPAQUE_TOKEN_PATTERN, "[REDACTED]");
+  return redacted.length > MAX_ERROR_BODY_CHARS
+    ? `${redacted.slice(0, MAX_ERROR_BODY_CHARS)}…[truncated]`
+    : redacted;
+}
+
 function requireCredentials(): { clientId: string; clientSecret: string; merchantCode: string } {
   if (!env.isSumUpConfigured) {
     throw new Error("SumUp is not configured (SUMUP_CLIENT_ID/SUMUP_CLIENT_SECRET/SUMUP_MERCHANT_CODE)");
@@ -64,7 +88,7 @@ async function getAccessToken(): Promise<string> {
   });
 
   if (!response.ok) {
-    const errorBody = await response.text().catch(() => "");
+    const errorBody = sanitizeUpstreamErrorBody(await response.text().catch(() => ""));
     throw new Error(`SumUp OAuth token request failed: ${response.status} ${response.statusText} ${errorBody}`);
   }
 
@@ -118,7 +142,7 @@ export async function createHostedCheckout(params: {
   });
 
   if (!response.ok) {
-    const errorBody = await response.text().catch(() => "");
+    const errorBody = sanitizeUpstreamErrorBody(await response.text().catch(() => ""));
     throw new Error(`SumUp checkout creation failed: ${response.status} ${response.statusText} ${errorBody}`);
   }
 
@@ -138,7 +162,7 @@ export async function getCheckoutStatus(checkoutId: string): Promise<SumUpChecko
   });
 
   if (!response.ok) {
-    const errorBody = await response.text().catch(() => "");
+    const errorBody = sanitizeUpstreamErrorBody(await response.text().catch(() => ""));
     throw new Error(`SumUp checkout status check failed: ${response.status} ${response.statusText} ${errorBody}`);
   }
 
@@ -178,7 +202,7 @@ export async function listReaders(): Promise<SumUpReader[]> {
   });
 
   if (!response.ok) {
-    const errorBody = await response.text().catch(() => "");
+    const errorBody = sanitizeUpstreamErrorBody(await response.text().catch(() => ""));
     throw new Error(`SumUp reader list request failed: ${response.status} ${response.statusText} ${errorBody}`);
   }
 
@@ -206,7 +230,7 @@ export async function pairReader(params: { pairingCode: string; name: string }):
   });
 
   if (!response.ok) {
-    const errorBody = await response.text().catch(() => "");
+    const errorBody = sanitizeUpstreamErrorBody(await response.text().catch(() => ""));
     throw new Error(`SumUp reader pairing failed: ${response.status} ${response.statusText} ${errorBody}`);
   }
 
@@ -246,7 +270,7 @@ export async function createReaderCheckout(params: {
   });
 
   if (!response.ok) {
-    const errorBody = await response.text().catch(() => "");
+    const errorBody = sanitizeUpstreamErrorBody(await response.text().catch(() => ""));
     throw new Error(`SumUp reader checkout creation failed: ${response.status} ${response.statusText} ${errorBody}`);
   }
 
@@ -273,7 +297,7 @@ export async function terminateReaderCheckout(readerId: string): Promise<void> {
   });
 
   if (!response.ok) {
-    const errorBody = await response.text().catch(() => "");
+    const errorBody = sanitizeUpstreamErrorBody(await response.text().catch(() => ""));
     throw new Error(`SumUp reader terminate failed: ${response.status} ${response.statusText} ${errorBody}`);
   }
 }
@@ -303,7 +327,7 @@ export async function getTransactionByClientId(clientTransactionId: string): Pro
   }
 
   if (!response.ok) {
-    const errorBody = await response.text().catch(() => "");
+    const errorBody = sanitizeUpstreamErrorBody(await response.text().catch(() => ""));
     throw new Error(`SumUp transaction lookup failed: ${response.status} ${response.statusText} ${errorBody}`);
   }
 
