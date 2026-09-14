@@ -58,6 +58,26 @@ export function createApp(): Express {
     message: { error: "too many login attempts, try again later" },
   });
 
+  // Secondary login guard, keyed on the normalized submitted email rather
+  // than IP (same window/limit as loginRateLimit, applied in addition to
+  // it) — a distributed attempt against one known email from many IPs would
+  // otherwise never trip the per-IP limiter above. Falls back to
+  // ipKeyGenerator (not raw req.ip) when the body's email is missing/not a
+  // string, same pattern as buvetteQrReplayRateLimit.
+  const loginEmailRateLimit = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => {
+      const email = (req.body as { email?: unknown } | undefined)?.email;
+      return typeof email === "string" && email
+        ? `email:${email.trim().toLowerCase()}`
+        : ipKeyGenerator(req.ip!);
+    },
+    message: { error: "too many login attempts, try again later" },
+  });
+
   // Guards against account-creation spam/abuse — registration is open to
   // anyone (no school-email or invite restriction, see CLAUDE.md
   // "Authentication"), so this is the only real throttle on bulk sign-ups.
@@ -141,7 +161,7 @@ export function createApp(): Express {
     res.json({ status: "ok" });
   });
 
-  app.use("/auth/login", loginRateLimit);
+  app.use("/auth/login", loginRateLimit, loginEmailRateLimit);
   app.use("/auth/register", registerRateLimit);
   app.use(["/auth/refresh", "/auth/logout"], refreshLogoutRateLimit);
   app.use("/auth", authRouter);
