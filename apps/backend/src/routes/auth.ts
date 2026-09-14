@@ -17,6 +17,13 @@ export const authRouter: ExpressRouter = Router();
 const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 const EMAIL_FORMAT = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// Sanity ceilings on registration input length, same reasoning as
+// products.ts's MAX_NAME_LENGTH: no business need for an unbounded value,
+// and an easy abuse/storage-bloat vector otherwise. 254 is RFC 5321's
+// maximum email address length.
+const MAX_NAME_LENGTH = 100;
+const MAX_EMAIL_LENGTH = 254;
+
 // null for a self-registered User with no Member/RBAC role — see
 // CLAUDE.md "Authentication" for why null rather than a sentinel enum value.
 function issueTokenPair(user: Pick<User, "id">, member: Pick<Member, "id" | "role" | "poleId"> | null) {
@@ -54,7 +61,16 @@ authRouter.post("/register", asyncHandler(async (req, res) => {
     return;
   }
 
+  if (firstName.trim().length > MAX_NAME_LENGTH || lastName.trim().length > MAX_NAME_LENGTH) {
+    res.status(400).json({ error: `firstName and lastName must be at most ${MAX_NAME_LENGTH} characters` });
+    return;
+  }
+
   const email = rawEmail.trim().toLowerCase();
+  if (email.length > MAX_EMAIL_LENGTH) {
+    res.status(400).json({ error: `email must be at most ${MAX_EMAIL_LENGTH} characters` });
+    return;
+  }
   if (!EMAIL_FORMAT.test(email)) {
     res.status(400).json({ error: "email is not a valid email address" });
     return;
