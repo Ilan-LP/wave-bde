@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Router, type Router as ExpressRouter } from "express";
 import { prisma } from "../lib/prisma.js";
 import { authenticate } from "../middleware/index.js";
+import { writeAuditLog } from "../middleware/audit.js";
 import { generateQrPayload, QR_TOKEN_TTL_MS } from "../lib/qrToken.js";
 import { env } from "../config/env.js";
 import { createHostedCheckout, getCheckoutStatus, pointsToAmountMinorUnits, SUMUP_CURRENCY } from "../lib/sumup.js";
@@ -50,6 +51,25 @@ meRouter.get("/qrcode", authenticate, asyncHandler(async (req, res) => {
     await prisma.pointsAccount.update({
       where: { id: pointsAccount.id },
       data: { qrToken, qrTokenExpiresAt },
+    });
+
+    // GET requests never pass through the generic auditLog middleware (it
+    // only hooks POST/PUT/PATCH/DELETE), but minting a fresh QR token is a
+    // real PointsAccount mutation — log it explicitly, same direct-call
+    // pattern as applySumUpCheckoutStatus()/buvette.ts's CANCEL_REQUESTED
+    // logging. Only the hash is recorded, never the raw token — same
+    // reasoning as buvette.ts's qrTokenHash on a spent QR: a still-valid
+    // credential shouldn't sit in the ledger verbatim.
+    writeAuditLog({
+      actorId: req.auth!.sub,
+      action: "UPDATE",
+      entityType: "PointsAccount",
+      entityId: pointsAccount.id,
+      ipAddress: req.ip ?? null,
+      metadata: {
+        source: "qrcode-endpoint",
+        qrTokenHash: createHash("sha256").update(qrToken).digest("hex"),
+      },
     });
   }
 

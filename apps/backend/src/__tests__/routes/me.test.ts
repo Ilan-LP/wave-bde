@@ -114,6 +114,10 @@ describe("GET /me/balance", () => {
 describe("GET /me/qrcode", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    // A newly-minted/rotated token is now audited directly (writeAuditLog),
+    // since GET requests never pass through the generic auditLog
+    // middleware — see CLAUDE.md "Audit Logging".
+    auditLogCreate.mockResolvedValue({} as never);
   });
 
   it("returns 401 without a valid access token", async () => {
