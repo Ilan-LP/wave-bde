@@ -7,6 +7,15 @@ import {
   FORCED_CANCEL_RECHECK_DELAY_MS,
 } from "../lib/buvetteCard.js";
 
+// Mirrors buvette.ts's own CANCEL_GRACE_MS (POST
+// /buvette/card/checkout/:id/confirm), which is a local, unexported const
+// there. Kept as a separate literal rather than importing it, same "mirrored
+// constant, not a second guessed rule" convention CLAUDE.md documents for
+// e.g. the buvette frontend's MAX_QUANTITY / RegisterScreen's
+// MIN_PASSWORD_LENGTH — if buvette.ts's CANCEL_GRACE_MS ever changes, update
+// this value too.
+const CANCEL_GRACE_MS = 8 * 1000;
+
 /**
  * Reconciles BuvetteCardCheckout rows stuck PENDING past
  * CARD_CHECKOUT_STALE_MS — i.e. the till's browser tab crashed, lost
@@ -16,6 +25,17 @@ import {
  * card, leaving the sale in the exact "ambiguous state" this feature must
  * avoid. Same class of bug as RechargeCheckout's B3, fixed by
  * runRechargeReconciliation (see CLAUDE.md "Recharge Reconciliation Job").
+ *
+ * Also applies the same cancel-grace-period fallback POST
+ * /buvette/card/checkout/:id/confirm uses (buvette.ts, ~line 632): if a
+ * stale-PENDING row's cancelRequestedAt is set and older than
+ * CANCEL_GRACE_MS, and SumUp still shows no transaction, it's forced to
+ * CANCELLED (via applyCardCheckoutStatus's forcedCancel flag) instead of
+ * looping as still-pending forever. This closes the gap where a cashier
+ * cancels and the tab crashes/loses network before another poll ever
+ * observes the forced cancellation itself — without this, such a row would
+ * never reach CANCELLED at all, and so would never become eligible for the
+ * forced-cancel-recheck pass below either.
  *
  * Also re-checks BuvetteCardCheckout rows that were forced to CANCELLED by
  * the confirm endpoint's grace-period fallback (forcedCancelAt set, see
@@ -66,13 +86,28 @@ export async function runBuvetteCardReconciliation(): Promise<void> {
 
   for (const cardCheckout of staleCheckouts) {
     try {
-      const sumupStatus = await getTransactionByClientId(cardCheckout.clientTransactionId);
+      let sumupStatus = await getTransactionByClientId(cardCheckout.clientTransactionId);
+
+      let forcedCancel = false;
+      if (
+        sumupStatus === "PENDING" &&
+        cardCheckout.cancelRequestedAt &&
+        Date.now() - cardCheckout.cancelRequestedAt.getTime() > CANCEL_GRACE_MS
+      ) {
+        // Same fallback as the confirm endpoint's grace-period logic: trust
+        // the termination worked rather than leaving this checkout PENDING
+        // forever with no poll left to resolve it.
+        sumupStatus = "CANCELLED";
+        forcedCancel = true;
+      }
+
       const resolution = await applyCardCheckoutStatus({
         cardCheckout,
         sumupStatus,
         actorId: null,
         ipAddress: null,
         source: "reconciliation-job",
+        forcedCancel,
       });
 
       if (resolution.outcome === "resolved") {

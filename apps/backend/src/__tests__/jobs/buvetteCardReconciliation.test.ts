@@ -114,6 +114,49 @@ describe("runBuvetteCardReconciliation", () => {
       actorId: null,
       ipAddress: null,
       source: "reconciliation-job",
+      forcedCancel: false,
+    });
+  });
+
+  it("forces a stale-PENDING checkout to CANCELLED when cancelRequestedAt is past the grace period and SumUp still shows no transaction", async () => {
+    const checkout = {
+      ...makeCheckout("card-1"),
+      cancelRequestedAt: new Date(NOW.getTime() - 9000), // > the mirrored 8s CANCEL_GRACE_MS
+    };
+    findMany.mockResolvedValueOnce([checkout] as never).mockResolvedValueOnce([]);
+    getTransactionByClientIdMock.mockResolvedValue("PENDING");
+    applyCardCheckoutStatusMock.mockResolvedValue({ outcome: "resolved", status: "CANCELLED" });
+
+    await runBuvetteCardReconciliation();
+
+    expect(applyCardCheckoutStatusMock).toHaveBeenCalledWith({
+      cardCheckout: checkout,
+      sumupStatus: "CANCELLED",
+      actorId: null,
+      ipAddress: null,
+      source: "reconciliation-job",
+      forcedCancel: true,
+    });
+  });
+
+  it("does not force-cancel a stale-PENDING checkout when cancelRequestedAt is within the grace period", async () => {
+    const checkout = {
+      ...makeCheckout("card-1"),
+      cancelRequestedAt: new Date(NOW.getTime() - 1000), // < the mirrored 8s CANCEL_GRACE_MS
+    };
+    findMany.mockResolvedValueOnce([checkout] as never).mockResolvedValueOnce([]);
+    getTransactionByClientIdMock.mockResolvedValue("PENDING");
+    applyCardCheckoutStatusMock.mockResolvedValue({ outcome: "still-pending" });
+
+    await runBuvetteCardReconciliation();
+
+    expect(applyCardCheckoutStatusMock).toHaveBeenCalledWith({
+      cardCheckout: checkout,
+      sumupStatus: "PENDING",
+      actorId: null,
+      ipAddress: null,
+      source: "reconciliation-job",
+      forcedCancel: false,
     });
   });
 
