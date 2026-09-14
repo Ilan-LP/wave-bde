@@ -163,6 +163,21 @@ export function createApp(): Express {
     message: { error: "too many requests, try again shortly" },
   });
 
+  // Modest per-IP limiter on the product catalog/management routes,
+  // matching the convention used for every other mutating route family
+  // (POST /products, PATCH /products/:id, PATCH /products/:id/active
+  // previously had none, relying only on requireRole("BUREAU") and the
+  // global body-size cap). Mounted on the whole /products prefix, so it
+  // also covers the two GET routes — same as buvetteCardRateLimit covering
+  // GET /buvette/readers alongside its mutating routes.
+  const productsRateLimit = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "too many requests, try again shortly" },
+  });
+
   app.use(helmet());
   // No credentials/cookies needed — auth is Bearer-token only.
   app.use(cors({ origin: env.corsOrigins }));
@@ -181,7 +196,7 @@ export function createApp(): Express {
   app.use("/me/recharge", rechargeRateLimit);
   app.use(["/me/balance", "/me/qrcode"], meReadRateLimit);
   app.use("/me", meRouter);
-  app.use("/products", productsRouter);
+  app.use("/products", productsRateLimit, productsRouter);
   app.use("/buvette/scan", buvetteScanRateLimit, buvetteQrReplayRateLimit);
   app.use(["/buvette/card", "/buvette/readers"], buvetteCardRateLimit);
   app.use("/buvette", buvetteRouter);
