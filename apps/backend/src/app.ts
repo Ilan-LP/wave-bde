@@ -139,12 +139,30 @@ export function createApp(): Express {
     message: { error: "duplicate scan, please rescan" },
   });
 
-  // Throttles self-service recharge attempts (create + confirm), per-IP
-  // like the buvette limiters above — a live SumUp call sits behind both
-  // routes, so a runaway client shouldn't be free to hammer it.
+  // Throttles the self-service recharge *create* call only, per-IP like the
+  // buvette limiters above — a live SumUp call sits behind it, so a runaway
+  // client shouldn't be free to hammer it. Split from the confirm-poll
+  // endpoint below (see rechargeConfirmRateLimit) — the two used to share
+  // this one bucket, but confirm alone can burn through it in well under a
+  // minute while a payment is in flight.
   const rechargeRateLimit = rateLimit({
     windowMs: 60 * 1000,
     limit: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "too many requests, try again shortly" },
+  });
+
+  // Confirm is polled every ~3s while a payment is in flight, for up to the
+  // 30-minute checkout validity window — a single legitimate recharge can
+  // exhaust rechargeRateLimit's 20/min on its own, and on a shared IP
+  // (school WiFi/NAT) that would 429 someone else's concurrent recharge
+  // too. Given its own, higher bucket instead — same precedent as
+  // buvetteCardRateLimit being split out from the general buvette limiter
+  // for the same "polling burns the budget" reason.
+  const rechargeConfirmRateLimit = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 60,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "too many requests, try again shortly" },
@@ -203,8 +221,10 @@ export function createApp(): Express {
   app.use("/auth/register", registerRateLimit);
   app.use(["/auth/refresh", "/auth/logout"], refreshLogoutRateLimit);
   app.use("/auth", authRouter);
-  // Prefix match: also covers /me/recharge/:id/confirm.
-  app.use("/me/recharge", rechargeRateLimit);
+  // Exact-route mounts (not app.use prefix-matching) so each endpoint gets
+  // exactly one of the two buckets above, never both.
+  app.post("/me/recharge", rechargeRateLimit);
+  app.post("/me/recharge/:id/confirm", rechargeConfirmRateLimit);
   app.use(["/me/balance", "/me/qrcode"], meReadRateLimit);
   app.use("/me", meRouter);
   app.use("/products", productsRateLimit, productsRouter);
