@@ -114,7 +114,13 @@ export function CardPaymentFlow({ sale, onComplete, onCancel }: CardPaymentFlowP
     // poll observing SumUp's actual outcome (see CLAUDE.md's "Buvette Card
     // Payment" section) — this just requests the termination and keeps
     // polling, it does not assume the payment actually stopped.
-    cancelCardCheckout(checkoutId).catch((err: unknown) => setError(mapCardError(err)));
+    cancelCardCheckout(checkoutId).catch((err: unknown) => {
+      // Leave the operator able to retry after a transient failure (network
+      // blip, 5xx, rate limit) instead of permanently disabling the button —
+      // see the disabled prop below, gated on `cancelling`.
+      setError(mapCardError(err));
+      setCancelling(false);
+    });
   }
 
   function handleChooseDifferentReader() {
