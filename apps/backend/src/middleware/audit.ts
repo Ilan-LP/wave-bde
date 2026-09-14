@@ -23,6 +23,7 @@ const REDACTED_KEYS = new Set([
   "authorization",
   "qrPayload",
   "pairingCode",
+  "hostedCheckoutUrl",
 ]);
 
 const REDACTED_PLACEHOLDER = "[REDACTED]";
