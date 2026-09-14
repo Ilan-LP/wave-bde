@@ -305,6 +305,29 @@ enum BuvetteCardCheckoutStatus {
   CANCELLED
 }
 
+/// One row per completed cash sale at the till (POST /buvette/cash).
+/// Deliberately independent of the points ledger, same reasoning as
+/// BuvetteCardCheckout above: a cash-paying customer is never identified via
+/// a QR scan, so there is no PointsAccount to credit or debit and no
+/// Transaction row is created for these. Unlike BuvetteCardCheckout, a cash
+/// sale has no async lifecycle — it's recorded once, synchronously, at the
+/// moment the cashier confirms it, so there is no status field.
+model BuvetteCashSale {
+  id            String   @id @default(cuid())
+  // Tags the payment method on the row itself rather than relying solely on
+  // the model/entityType name — always "CASH" today; kept as a plain string
+  // default rather than a single-value enum since no other cash-adjacent
+  // method exists yet.
+  paymentMethod String   @default("CASH")
+  amountPoints  Int
+  // Product/custom-amount breakdown recorded by value, same convention as
+  // Transaction.metadata / BuvetteCardCheckout.metadata.
+  metadata      Json?
+  createdAt     DateTime @default(now())
+
+  @@index([createdAt])
+}
+
 // ---------------------------------------------------------------------------
 // Products
 // ---------------------------------------------------------------------------

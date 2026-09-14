@@ -128,3 +128,16 @@ export interface CardCheckoutStatusResponse {
   checkoutId: string;
   cancelRequested?: boolean;
 }
+
+export interface CashSaleRequest {
+  productId?: string;
+  customAmount?: number;
+  quantity?: number;
+}
+
+export interface CashSaleResponse {
+  saleId: string;
+  product: Product | null;
+  quantity: number | null;
+  amountPoints: number;
+}

@@ -111,6 +111,17 @@ export function createApp(): Express {
     message: { error: "too many requests, try again shortly" },
   });
 
+  // General throttle on the buvette cash-sale endpoint, same shape as
+  // buvetteScanRateLimit above — cash, like scan, is a single synchronous
+  // request per sale, unlike card's polling-driven higher limit.
+  const buvetteCashRateLimit = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "too many requests, try again shortly" },
+  });
+
   // Anti-fraud replay guard: the exact same scanned QR value can only be
   // attempted once per 3 seconds, keyed on the request body rather than the
   // caller's IP. Falls back to ipKeyGenerator (not raw req.ip) when the body
@@ -198,6 +209,7 @@ export function createApp(): Express {
   app.use("/me", meRouter);
   app.use("/products", productsRateLimit, productsRouter);
   app.use("/buvette/scan", buvetteScanRateLimit, buvetteQrReplayRateLimit);
+  app.use("/buvette/cash", buvetteCashRateLimit);
   app.use(["/buvette/card", "/buvette/readers"], buvetteCardRateLimit);
   app.use("/buvette", buvetteRouter);
 

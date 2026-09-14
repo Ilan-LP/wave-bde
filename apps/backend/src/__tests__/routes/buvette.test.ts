@@ -20,6 +20,9 @@ vi.mock("../../lib/prisma.js", () => ({
       create: vi.fn(),
       update: vi.fn(),
     },
+    buvetteCashSale: {
+      create: vi.fn(),
+    },
     auditLog: {
       create: vi.fn(),
     },
@@ -58,6 +61,7 @@ const cardCheckoutFindFirst = vi.mocked(prisma.buvetteCardCheckout.findFirst);
 const cardCheckoutFindUnique = vi.mocked(prisma.buvetteCardCheckout.findUnique);
 const cardCheckoutCreate = vi.mocked(prisma.buvetteCardCheckout.create);
 const cardCheckoutUpdate = vi.mocked(prisma.buvetteCardCheckout.update);
+const cashSaleCreate = vi.mocked(prisma.buvetteCashSale.create);
 const auditLogCreate = vi.mocked(prisma.auditLog.create);
 const listReadersMock = vi.mocked(listReaders);
 const pairReaderMock = vi.mocked(pairReader);
@@ -970,5 +974,153 @@ describe("POST /buvette/card/checkout/:id/cancel", () => {
 
     expect(res.status).toBe(202);
     expect(cardCheckoutUpdate).toHaveBeenCalled();
+  });
+});
+
+describe("POST /buvette/cash", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns 401 without a valid access token", async () => {
+    const res = await supertest(makeApp()).post("/buvette/cash").send({ productId: "product-1" });
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 400 when neither productId nor customAmount is provided", async () => {
+    const res = await supertest(makeApp()).post("/buvette/cash").set("Authorization", `Bearer ${makeToken()}`).send({});
+
+    expect(res.status).toBe(400);
+    expect(cashSaleCreate).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when both productId and customAmount are provided", async () => {
+    const res = await supertest(makeApp())
+      .post("/buvette/cash")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ productId: "product-1", customAmount: 50 });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when customAmount exceeds the upper bound", async () => {
+    const res = await supertest(makeApp())
+      .post("/buvette/cash")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ customAmount: 999_999_999 });
+
+    expect(res.status).toBe(400);
+    expect(cashSaleCreate).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when quantity exceeds the upper bound", async () => {
+    const res = await supertest(makeApp())
+      .post("/buvette/cash")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ productId: "product-1", quantity: 999_999_999 });
+
+    expect(res.status).toBe(400);
+    expect(productFindUnique).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when quantity is provided alongside customAmount", async () => {
+    const res = await supertest(makeApp())
+      .post("/buvette/cash")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ customAmount: 50, quantity: 2 });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 404 when the product does not exist", async () => {
+    productFindUnique.mockResolvedValue(null);
+
+    const res = await supertest(makeApp())
+      .post("/buvette/cash")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ productId: "nonexistent" });
+
+    expect(res.status).toBe(404);
+    expect(cashSaleCreate).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 when the product is inactive", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    productFindUnique.mockResolvedValue({ ...product, isActive: false } as any);
+
+    const res = await supertest(makeApp())
+      .post("/buvette/cash")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ productId: "product-1" });
+
+    expect(res.status).toBe(409);
+    expect(cashSaleCreate).not.toHaveBeenCalled();
+  });
+
+  it("records a cash sale for a product and returns 201", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    productFindUnique.mockResolvedValue(product as any);
+    cashSaleCreate.mockResolvedValue({
+      id: "cash-1",
+      paymentMethod: "CASH",
+      amountPoints: 200,
+      metadata: { productId: "product-1", productName: "Beer", quantity: 2, unitPricePoints: 100 },
+      createdAt: new Date(),
+    });
+
+    const res = await supertest(makeApp())
+      .post("/buvette/cash")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ productId: "product-1", quantity: 2 });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      saleId: "cash-1",
+      product: { id: "product-1", name: "Beer", pricePoints: 100 },
+      quantity: 2,
+      amountPoints: 200,
+    });
+    expect(cashSaleCreate).toHaveBeenCalledWith({
+      data: {
+        amountPoints: 200,
+        metadata: { productId: "product-1", productName: "Beer", quantity: 2, unitPricePoints: 100 },
+      },
+    });
+  });
+
+  it("records a cash sale for a custom amount and returns null product/quantity", async () => {
+    cashSaleCreate.mockResolvedValue({
+      id: "cash-2",
+      paymentMethod: "CASH",
+      amountPoints: 50,
+      metadata: { customAmount: true, amountPoints: 50 },
+      createdAt: new Date(),
+    });
+
+    const res = await supertest(makeApp())
+      .post("/buvette/cash")
+      .set("Authorization", `Bearer ${makeToken()}`)
+      .send({ customAmount: 50 });
+
+    expect(res.status).toBe(201);
+    expect(productFindUnique).not.toHaveBeenCalled();
+    expect(res.body).toMatchObject({ saleId: "cash-2", product: null, quantity: null, amountPoints: 50 });
+  });
+
+  it("allows BUREAU and RESPONSABLE_POLE roles through, not just MEMBRE_POLE", async () => {
+    cashSaleCreate.mockResolvedValue({
+      id: "cash-3",
+      paymentMethod: "CASH",
+      amountPoints: 50,
+      metadata: { customAmount: true, amountPoints: 50 },
+      createdAt: new Date(),
+    });
+
+    const res = await supertest(makeApp())
+      .post("/buvette/cash")
+      .set("Authorization", `Bearer ${makeToken("BUREAU")}`)
+      .send({ customAmount: 50 });
+
+    expect(res.status).toBe(201);
   });
 });

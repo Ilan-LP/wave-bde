@@ -228,6 +228,111 @@ buvetteRouter.post(
 );
 
 // ---------------------------------------------------------------------------
+// Cash payment — see CLAUDE.md's "Buvette Cash Sale Recording" section.
+// Deliberately independent of the points ledger, same reasoning as the card
+// checkout below: a cash-paying customer is never identified (no QR scan),
+// so there is no PointsAccount to credit or debit and no Transaction row is
+// created. Unlike card, a cash sale completes synchronously in one request —
+// no reader, no async polling, no PENDING/confirm/cancel lifecycle.
+// ---------------------------------------------------------------------------
+
+buvetteRouter.post(
+  "/cash",
+  authenticate,
+  requireRole("RESPONSABLE_POLE", "MEMBRE_POLE"),
+  asyncHandler(async (req, res) => {
+    // Same productId/customAmount/quantity validation as POST /scan and
+    // POST /card/checkout above — duplicated rather than extracted into a
+    // shared helper, same reasoning as the card-checkout route: avoid
+    // touching either existing, already-tested handler for this addition.
+    const {
+      productId,
+      customAmount: rawCustomAmount,
+      quantity: rawQuantity,
+    } = req.body as {
+      productId?: unknown;
+      customAmount?: unknown;
+      quantity?: unknown;
+    };
+
+    const hasProductId = typeof productId === "string" && productId.length > 0;
+    const hasCustomAmount = rawCustomAmount !== undefined;
+
+    if (hasProductId === hasCustomAmount) {
+      res.status(400).json({ error: "exactly one of productId or customAmount is required" });
+      return;
+    }
+
+    if (hasCustomAmount) {
+      if (
+        typeof rawCustomAmount !== "number" ||
+        !Number.isInteger(rawCustomAmount) ||
+        rawCustomAmount < 1 ||
+        rawCustomAmount > MAX_CUSTOM_AMOUNT
+      ) {
+        res.status(400).json({ error: `customAmount must be an integer between 1 and ${MAX_CUSTOM_AMOUNT}` });
+        return;
+      }
+      if (rawQuantity !== undefined) {
+        res.status(400).json({ error: "quantity is not allowed with customAmount" });
+        return;
+      }
+    }
+
+    let quantity = 1;
+    if (hasProductId && rawQuantity !== undefined) {
+      if (
+        typeof rawQuantity !== "number" ||
+        !Number.isInteger(rawQuantity) ||
+        rawQuantity < 1 ||
+        rawQuantity > MAX_QUANTITY
+      ) {
+        res.status(400).json({ error: `quantity must be an integer between 1 and ${MAX_QUANTITY}` });
+        return;
+      }
+      quantity = rawQuantity;
+    }
+
+    let product: { id: string; name: string; pricePoints: number; isActive: boolean } | null = null;
+    let totalPrice: number;
+
+    if (hasProductId) {
+      product = await prisma.product.findUnique({ where: { id: productId as string } });
+      if (!product) {
+        res.status(404).json({ error: "product not found" });
+        return;
+      }
+      if (!product.isActive) {
+        res.status(409).json({ error: "product is not active" });
+        return;
+      }
+      totalPrice = product.pricePoints * quantity;
+    } else {
+      totalPrice = rawCustomAmount as number;
+    }
+
+    const cashSale = await prisma.buvetteCashSale.create({
+      data: {
+        amountPoints: totalPrice,
+        metadata: product
+          ? { productId: product.id, productName: product.name, quantity, unitPricePoints: product.pricePoints }
+          : { customAmount: true, amountPoints: totalPrice },
+      },
+    });
+
+    res.locals.auditEntityType = "BuvetteCashSale";
+    res.locals.auditEntityId = cashSale.id;
+
+    res.status(201).json({
+      saleId: cashSale.id,
+      product: product ? { id: product.id, name: product.name, pricePoints: product.pricePoints } : null,
+      quantity: product ? quantity : null,
+      amountPoints: totalPrice,
+    });
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // Card payment (SumUp Readers API) — see CLAUDE.md's "Buvette Card Payment"
 // section for the full design. Deliberately independent of the points
 // deduction above: a card-present sale never identifies a customer, so none
