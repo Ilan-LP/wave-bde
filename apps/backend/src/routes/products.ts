@@ -11,6 +11,10 @@ export const productsRouter: ExpressRouter = Router();
 // MAX_QUANTITY). Adjust freely.
 const MAX_PRICE_POINTS = 100_000;
 
+// Sanity ceiling on a product name's length — no business reason for a
+// longer name, and an unbounded one is an easy abuse/storage-bloat vector.
+const MAX_NAME_LENGTH = 200;
+
 productsRouter.get("/", authenticate, requireRole("RESPONSABLE_POLE", "MEMBRE_POLE"), asyncHandler(async (_req, res) => {
   const products = await prisma.product.findMany({
     where: { isActive: true },
@@ -39,6 +43,10 @@ productsRouter.post("/", authenticate, requireRole("BUREAU"), asyncHandler(async
 
   if (typeof name !== "string" || !name.trim()) {
     res.status(400).json({ error: "name is required" });
+    return;
+  }
+  if (name.trim().length > MAX_NAME_LENGTH) {
+    res.status(400).json({ error: `name must be at most ${MAX_NAME_LENGTH} characters` });
     return;
   }
   if (
@@ -73,6 +81,10 @@ productsRouter.patch("/:id", authenticate, requireRole("BUREAU"), asyncHandler(a
   }
   if (name !== undefined && (typeof name !== "string" || !name.trim())) {
     res.status(400).json({ error: "name must be a non-empty string" });
+    return;
+  }
+  if (name !== undefined && (name as string).trim().length > MAX_NAME_LENGTH) {
+    res.status(400).json({ error: `name must be at most ${MAX_NAME_LENGTH} characters` });
     return;
   }
   if (

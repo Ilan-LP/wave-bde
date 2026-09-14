@@ -149,6 +149,16 @@ describe("POST /products", () => {
     expect(productCreate).not.toHaveBeenCalled();
   });
 
+  it("returns 400 when name exceeds the maximum length", async () => {
+    const res = await supertest(makeApp())
+      .post("/products")
+      .set("Authorization", `Bearer ${makeToken("BUREAU")}`)
+      .send({ name: "a".repeat(201), pricePoints: 100 });
+
+    expect(res.status).toBe(400);
+    expect(productCreate).not.toHaveBeenCalled();
+  });
+
   it("creates a product, active by default, trimming the name", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     productCreate.mockResolvedValue({ id: "p1", name: "Beer", pricePoints: 100, isActive: true } as any);
@@ -209,6 +219,16 @@ describe("PATCH /products/:id", () => {
       .patch("/products/p1")
       .set("Authorization", `Bearer ${makeToken("BUREAU")}`)
       .send({ pricePoints: 999_999_999 });
+
+    expect(res.status).toBe(400);
+    expect(productUpdate).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when name exceeds the maximum length", async () => {
+    const res = await supertest(makeApp())
+      .patch("/products/p1")
+      .set("Authorization", `Bearer ${makeToken("BUREAU")}`)
+      .send({ name: "a".repeat(201) });
 
     expect(res.status).toBe(400);
     expect(productUpdate).not.toHaveBeenCalled();
