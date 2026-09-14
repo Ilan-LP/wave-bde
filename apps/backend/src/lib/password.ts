@@ -23,12 +23,22 @@ export async function verifyDummyPassword(plain: string): Promise<void> {
 
 const MIN_PASSWORD_LENGTH = 8;
 
+// bcrypt silently truncates its input at 72 bytes — anything beyond that
+// is ignored, so two different passwords sharing the same first 72 bytes
+// would hash identically. Reject upfront instead of accepting a password
+// whose extra bytes are never actually checked. This is a byte count, not
+// a character count, since bcrypt operates on the UTF-8 encoding.
+const MAX_PASSWORD_LENGTH_BYTES = 72;
+
 // Returns an error message if the password is too weak, or null if it's
-// acceptable. Deliberately just a length floor, no composition rules
-// (uppercase/digit/symbol) — see CLAUDE.md "Authentication" for why.
+// acceptable. Deliberately just a length floor/ceiling, no composition
+// rules (uppercase/digit/symbol) — see CLAUDE.md "Authentication" for why.
 export function validatePasswordStrength(plain: string): string | null {
   if (plain.length < MIN_PASSWORD_LENGTH) {
     return `password must be at least ${MIN_PASSWORD_LENGTH} characters`;
+  }
+  if (Buffer.byteLength(plain, "utf8") > MAX_PASSWORD_LENGTH_BYTES) {
+    return `password must be at most ${MAX_PASSWORD_LENGTH_BYTES} bytes`;
   }
   return null;
 }
