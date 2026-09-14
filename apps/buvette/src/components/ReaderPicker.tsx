@@ -17,6 +17,14 @@ function setStoredReaderId(readerId: string): void {
   localStorage.setItem(READER_STORAGE_KEY, readerId);
 }
 
+// Lets a caller send the till back through the picker — e.g. CardPaymentFlow
+// on a "reader not found" 404, when the stored reader was unpaired/removed
+// server-side and the till needs to pick a different one instead of only
+// being recoverable by manually clearing localStorage.
+export function clearStoredReaderId(): void {
+  localStorage.removeItem(READER_STORAGE_KEY);
+}
+
 interface ReaderPickerProps {
   onSelect: (readerId: string) => void;
 }

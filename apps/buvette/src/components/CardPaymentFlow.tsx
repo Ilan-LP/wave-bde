@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { CardCheckoutStatus } from "@wave/api-types";
 import { Banner, Button } from "@wave/ui";
 import { cancelCardCheckout, pollCardCheckout, startCardCheckout, CardPaymentError } from "../lib/cardPayment";
-import { getStoredReaderId, ReaderPicker } from "./ReaderPicker";
+import { clearStoredReaderId, getStoredReaderId, ReaderPicker } from "./ReaderPicker";
 import { saleTotal, type Sale } from "../types";
 
 // How often the till polls for a resolved outcome while a card checkout is
@@ -17,11 +17,21 @@ interface CardPaymentFlowProps {
   onCancel: () => void;
 }
 
+// POST /buvette/card/checkout can 404 for two unrelated reasons — the
+// backend already tells them apart via distinct messages ("reader not
+// found" vs "product not found", see apps/backend/src/routes/buvette.ts),
+// so branch on that instead of assuming which one happened.
+function isReaderNotFoundError(err: unknown): boolean {
+  return err instanceof CardPaymentError && err.status === 404 && err.message === "reader not found";
+}
+
 function mapCardError(err: unknown): string {
   if (err instanceof CardPaymentError) {
     switch (err.status) {
       case 404:
-        return "Product not found.";
+        return isReaderNotFoundError(err)
+          ? "Card reader not found — it may have been unpaired. Choose a different reader."
+          : "Product not found.";
       case 409:
         return "This reader already has a payment in progress.";
       case 502:
@@ -41,6 +51,10 @@ export function CardPaymentFlow({ sale, onComplete, onCancel }: CardPaymentFlowP
   const [status, setStatus] = useState<CardCheckoutStatus | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set only when the checkout-start 404 is reader-specific — drives the
+  // "choose a different reader" affordance below, instead of leaving a stale
+  // localStorage entry as the only way out of a re-paired/unpaired reader.
+  const [readerNotFound, setReaderNotFound] = useState(false);
   // Guards against React 18 StrictMode's dev-only double-invoke starting two
   // checkouts for the same sale (see ScanPaymentFlow.tsx for the equivalent
   // concern with the camera).
@@ -52,6 +66,7 @@ export function CardPaymentFlow({ sale, onComplete, onCancel }: CardPaymentFlowP
     }
     startedRef.current = true;
     setError(null);
+    setReaderNotFound(false);
 
     startCardCheckout(
       sale.kind === "product"
@@ -65,6 +80,7 @@ export function CardPaymentFlow({ sale, onComplete, onCancel }: CardPaymentFlowP
       .catch((err: unknown) => {
         startedRef.current = false;
         setError(mapCardError(err));
+        setReaderNotFound(isReaderNotFoundError(err));
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [readerId]);
@@ -101,6 +117,16 @@ export function CardPaymentFlow({ sale, onComplete, onCancel }: CardPaymentFlowP
     cancelCardCheckout(checkoutId).catch((err: unknown) => setError(mapCardError(err)));
   }
 
+  function handleChooseDifferentReader() {
+    clearStoredReaderId();
+    startedRef.current = false;
+    setReaderNotFound(false);
+    setError(null);
+    setCheckoutId(null);
+    setStatus(null);
+    setReaderId(null);
+  }
+
   if (!readerId) {
     return <ReaderPicker onSelect={setReaderId} />;
   }
@@ -109,6 +135,11 @@ export function CardPaymentFlow({ sale, onComplete, onCancel }: CardPaymentFlowP
     <div className="space-y-4">
       <p className="text-lg font-semibold">Total: {saleTotal(sale)} pts</p>
       {error && <Banner variant="error">{error}</Banner>}
+      {readerNotFound && (
+        <Button variant="secondary" onClick={handleChooseDifferentReader} className="w-full">
+          Choose a different reader
+        </Button>
+      )}
       {!error && status === "PENDING" && (
         <Banner variant="info">{cancelling ? "Cancelling…" : "Present card on the reader…"}</Banner>
       )}
