@@ -1,7 +1,10 @@
-function requireEnv(name: string): string {
+function requireEnv(name: string, minLength?: number): string {
   const value = process.env[name];
   if (!value) {
     throw new Error(`Missing required environment variable: ${name}`);
+  }
+  if (minLength !== undefined && value.length < minLength) {
+    throw new Error(`Environment variable ${name} must be at least ${minLength} characters long`);
   }
   return value;
 }
@@ -26,8 +29,8 @@ const sumupClientSecret = process.env.SUMUP_CLIENT_SECRET || undefined;
 const sumupMerchantCode = process.env.SUMUP_MERCHANT_CODE || undefined;
 
 export const env = {
-  jwtSecret: requireEnv("JWT_SECRET"),
-  jwtRefreshSecret: requireEnv("JWT_REFRESH_SECRET"),
+  jwtSecret: requireEnv("JWT_SECRET", 32),
+  jwtRefreshSecret: requireEnv("JWT_REFRESH_SECRET", 32),
   corsOrigins: requireEnv("CORS_ORIGINS")
     .split(",")
     .map((origin) => origin.trim())
